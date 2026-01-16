@@ -293,13 +293,10 @@ function drawText(ctx, item) {
 
   let fontFamily = item.fontFamily;
   ctx.font = `${item.fontSize}px ${fontFamily}`;
-  ctx.fillStyle = item.color || "#000";
   ctx.textBaseline = "alphabetic";
 
   // 应用 CTM 变换矩阵
   if (item.ctm && item.ctm.length >= 4) {
-    // CTM 格式: [a, b, c, d, e, f]
-    // a = X轴缩放, d = Y轴缩放, b/c = 倾斜, e/f = 平移(单位mm，已转换为px)
     const a = item.ctm[0];
     const b = item.ctm[1];
     const c = item.ctm[2];
@@ -307,12 +304,30 @@ function drawText(ctx, item) {
     const e = item.ctm.length > 4 ? item.ctm[4] : 0;
     const f = item.ctm.length > 5 ? item.ctm[5] : 0;
 
-    // 先移动到绘制位置，应用完整变换矩阵
     ctx.translate(item.x, item.y);
     ctx.transform(a, b, c, d, e, f);
-    ctx.fillText(item.text, 0, 0);
+
+    // 处理填充和描边
+    if (item.fill !== false) {
+      ctx.fillStyle = item.color || "#000";
+      ctx.fillText(item.text, 0, 0);
+    }
+    if (item.stroke && item.strokeColor) {
+      ctx.strokeStyle = item.strokeColor;
+      ctx.lineWidth = item.lineWidth || 1;
+      ctx.strokeText(item.text, 0, 0);
+    }
   } else {
-    ctx.fillText(item.text, item.x, item.y);
+    // 处理填充和描边
+    if (item.fill !== false) {
+      ctx.fillStyle = item.color || "#000";
+      ctx.fillText(item.text, item.x, item.y);
+    }
+    if (item.stroke && item.strokeColor) {
+      ctx.strokeStyle = item.strokeColor;
+      ctx.lineWidth = item.lineWidth || 1;
+      ctx.strokeText(item.text, item.x, item.y);
+    }
   }
 
   ctx.restore();
@@ -401,6 +416,9 @@ function drawPath(ctx, pathData) {
 function renderTransparentTextLayer(container, textItems) {
   if (!textItems || textItems.length === 0) return;
 
+  // Ascent 比例：基线到顶部的距离约占字号的 88%
+  const ascentRatio = 0.88;
+
   for (const item of textItems) {
     const span = document.createElement("span");
     span.textContent = item.text;
@@ -408,12 +426,19 @@ function renderTransparentTextLayer(container, textItems) {
     // 计算 CTM 变换
     let transform = "";
     if (item.ctm && item.ctm.length >= 4) {
-      const [a, b, c, d, e, f] = item.ctm;
+      const a = item.ctm[0];
+      const b = item.ctm[1];
+      const c = item.ctm[2];
+      const d = item.ctm[3];
+      const e = item.ctm[4] || 0;
+      const f = item.ctm[5] || 0;
       // CSS transform matrix(a, b, c, d, e, f)
-      transform = `transform: matrix(${a}, ${b}, ${c}, ${d}, ${e || 0}, ${
-        f || 0
-      }); transform-origin: left top;`;
+      transform = `transform: matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f}); transform-origin: left top;`;
     }
+
+    // OFD 的 Y 坐标是基线位置，HTML 的 top 是元素顶部
+    // 需要减去 Ascent（基线到顶部的距离）
+    const topPos = item.y - item.fontSize * ascentRatio;
 
     // 关键样式：
     // - color: transparent 让文字透明（用户看不见）
@@ -422,7 +447,7 @@ function renderTransparentTextLayer(container, textItems) {
     span.style.cssText = `
       position: absolute;
       left: ${item.x}px;
-      top: ${item.y - item.fontSize}px;
+      top: ${topPos}px;
       font-family: ${item.fontFamily};
       font-size: ${item.fontSize}px;
       color: transparent;

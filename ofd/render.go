@@ -60,14 +60,18 @@ type ImageData struct {
 
 // TextItem 文本项
 type TextItem struct {
-	Text       string    `json:"text"`
-	X          float64   `json:"x"`
-	Y          float64   `json:"y"`
-	FontSize   float64   `json:"fontSize"`
-	FontFamily string    `json:"fontFamily"`
-	FontID     string    `json:"fontID"`
-	Color      string    `json:"color"`
-	CTM        []float64 `json:"ctm,omitempty"` // 变换矩阵 [a, b, c, d, e, f]
+	Text        string    `json:"text"`
+	X           float64   `json:"x"`
+	Y           float64   `json:"y"`
+	FontSize    float64   `json:"fontSize"`
+	FontFamily  string    `json:"fontFamily"`
+	FontID      string    `json:"fontID"`
+	Color       string    `json:"color"`
+	CTM         []float64 `json:"ctm,omitempty"`         // 变换矩阵 [a, b, c, d, e, f]
+	Stroke      bool      `json:"stroke,omitempty"`      // 是否描边
+	StrokeColor string    `json:"strokeColor,omitempty"` // 描边颜色
+	LineWidth   float64   `json:"lineWidth,omitempty"`   // 描边线宽
+	Fill        bool      `json:"fill,omitempty"`        // 是否填充
 }
 
 // FontInfo 字体信息
@@ -976,12 +980,28 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 	// OFD 中 Size 是字体大小（单位 mm），需要转换为像素
 	fontSize := text.Size * scale
 
-	// 处理颜色 - 优先使用 FillColor，如果是描边文字则使用 StrokeColor
-	color := "#000"
+	// 处理填充颜色
+	fillColor := "#000"
 	if text.FillColor != nil && text.FillColor.Value != "" {
-		color = parseColor(text.FillColor.Value)
-	} else if text.StrokeColor != nil && text.StrokeColor.Value != "" {
-		color = parseColor(text.StrokeColor.Value)
+		fillColor = parseColor(text.FillColor.Value)
+	}
+
+	// 处理描边颜色
+	strokeColor := ""
+	if text.StrokeColor != nil && text.StrokeColor.Value != "" {
+		strokeColor = parseColor(text.StrokeColor.Value)
+	}
+
+	// 确定主颜色（用于显示）
+	color := fillColor
+	if text.Stroke && !text.Fill && strokeColor != "" {
+		color = strokeColor
+	}
+
+	// 处理描边线宽
+	lineWidth := text.LineWidth * scale
+	if lineWidth == 0 && text.Stroke {
+		lineWidth = 1 // 默认描边宽度
 	}
 
 	// 解析 CTM 变换矩阵，并转换 e, f 为像素
@@ -1004,15 +1024,14 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 		}
 
 		// TextCode 的 X, Y 是相对于 Boundary 左上角的偏移（单位 mm）
-		// 最终位置 = Boundary位置 + TextCode偏移
 		tcX := (bx + tc.X) * scale
 		tcY := (by + tc.Y) * scale
 
 		// 调试输出
 		if debug != nil && len(content) <= 6 {
 			debug.TextDebug = append(debug.TextDebug,
-				fmt.Sprintf("text='%s' boundary=(%.2f,%.2f) tc=(%.2f,%.2f,%.2f,%.2f) final=(%.2f,%.2f)",
-					content, bx, by, tc.X, tc.Y,by,bx, tcX, tcY))
+				fmt.Sprintf("text='%s' boundary=(%.2f,%.2f) tc=(%.2f,%.2f) final=(%.2f,%.2f) stroke=%v",
+					content, bx, by, tc.X, tc.Y, tcX, tcY, text.Stroke))
 		}
 
 		chars := []rune(content)
@@ -1021,26 +1040,30 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 		var deltaX []float64
 		if tc.DeltaX != "" {
 			deltaX = parseDeltas(tc.DeltaX)
-		}		// 如果有多个字符且有 DeltaX，需要逐字符定位
+		}
+
+		// 如果有多个字符且有 DeltaX，需要逐字符定位
 		if len(chars) > 1 && len(deltaX) > 0 {
 			currentX := tcX
 
 			for i, char := range chars {
 				result.TextLayer = append(result.TextLayer, TextItem{
-					Text:       string(char),
-					X:          currentX,
-					Y:          tcY,
-					FontSize:   fontSize,
-					FontFamily: fontFamily,
-					FontID:     fontID,
-					Color:      color,
-					CTM:        ctm,
+					Text:        string(char),
+					X:           currentX,
+					Y:           tcY,
+					FontSize:    fontSize,
+					FontFamily:  fontFamily,
+					FontID:      fontID,
+					Color:       color,
+					CTM:         ctm,
+					Stroke:      text.Stroke,
+					StrokeColor: strokeColor,
+					LineWidth:   lineWidth,
+					Fill:        text.Fill || !text.Stroke, // 默认填充
 				})
 
 				// 计算下一个字符的位置
-				// DeltaX[i] 是第 i 个字符到第 i+1 个字符的偏移（单位 mm）
 				if i < len(deltaX) {
-					// 如果有 CTM，需要考虑 X 轴缩放
 					delta := deltaX[i] * scale
 					if len(ctm) >= 1 && ctm[0] != 0 {
 						delta = delta * ctm[0]
@@ -1051,14 +1074,18 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 		} else {
 			// 没有 DeltaX 或只有一个字符，整体输出
 			result.TextLayer = append(result.TextLayer, TextItem{
-				Text:       content,
-				X:          tcX,
-				Y:          tcY,
-				FontSize:   fontSize,
-				FontFamily: fontFamily,
-				FontID:     fontID,
-				Color:      color,
-				CTM:        ctm,
+				Text:        content,
+				X:           tcX,
+				Y:           tcY,
+				FontSize:    fontSize,
+				FontFamily:  fontFamily,
+				FontID:      fontID,
+				Color:       color,
+				CTM:         ctm,
+				Stroke:      text.Stroke,
+				StrokeColor: strokeColor,
+				LineWidth:   lineWidth,
+				Fill:        text.Fill || !text.Stroke,
 			})
 		}
 	}
