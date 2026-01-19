@@ -442,15 +442,19 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 				continue
 			}
 
+			// 移除命名空间前缀，使 XML 解析更简单
+			xmlStr := removeNamespacePrefix(string(data))
+
 			var sigs Signatures
-			if err := xml.Unmarshal(data, &sigs); err != nil {
+			if err := xml.Unmarshal([]byte(xmlStr), &sigs); err != nil {
 				debug.Stamps = append(debug.Stamps, "parse error: "+err.Error())
 				continue
 			}
 
 			basePath := path.Dir(file)
 			for _, sig := range sigs.Signature {
-				debug.Stamps = append(debug.Stamps, "sig: "+sig.ID+" loc: "+sig.BaseLoc)
+				result := fmt.Sprintf("sig: %+v", sigs)
+				debug.Stamps = append(debug.Stamps, "sig: "+ result +" loc: "+sig.BaseLoc)
 
 				// 尝试多种路径组合读取签章 XML
 				sigLoc := strings.TrimPrefix(sig.BaseLoc, "/")
@@ -492,7 +496,7 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 		}
 	}
 
-	// 2. 查找页面注释文件 (Annots/Page_X/Annotation.xml)
+	 
 	pageAnnotPath := fmt.Sprintf("page_%d", pageIndex)
 	for _, file := range p.files {
 		lower := strings.ToLower(file)
@@ -568,124 +572,36 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 		}
 	}
 
-	// 获取当前页面ID
+	// 获取当前页面ID（从 Document.xml 中的 Pages.Page[pageIndex].ID）
 	pageID := ""
 	if p.document != nil && pageIndex < len(p.document.Pages.Page) {
 		pageID = p.document.Pages.Page[pageIndex].ID
 	}
-	debug.Stamps = append(debug.Stamps, fmt.Sprintf("pageID=%s, pageIndex=%d, totalAnnots=%d", pageID, pageIndex, len(allAnnots)))
+	debug.Stamps = append(debug.Stamps, fmt.Sprintf("current pageID=%s, pageIndex=%d, totalAnnots=%d", pageID, pageIndex, len(allAnnots)))
 
 	// 查找当前页面的印章
+	// 只通过 PageRef 与 pageID 匹配，不使用页面索引
 	for _, item := range allAnnots {
-		// 检查是否属于当前页面
-		matched := item.annot.PageRef == pageID ||
-			item.annot.PageRef == fmt.Sprintf("%d", pageIndex) ||
-			item.annot.PageRef == fmt.Sprintf("%d", pageIndex+1)
+		// StampAnnot 的 PageRef 应该等于 Document.xml 中定义的页面 ID
+		matched := item.annot.PageRef == pageID
 		
-		debug.Stamps = append(debug.Stamps, fmt.Sprintf("checking annot: pageRef=%s, matched=%v", item.annot.PageRef, matched))
+		debug.Stamps = append(debug.Stamps, fmt.Sprintf("checking annot: pageRef=%s, currentPageID=%s, matched=%v", 
+			item.annot.PageRef, pageID, matched))
 		
 		if matched {
 			p.loadSealImage(result, scale, item.sigDir, item.sigID, &item.annot, debug)
 		}
 	}
 
-	// 4. 如果没有找到印章，尝试直接加载所有印章文件
-	if len(result.CanvasData.Images) == 0 {
-		debug.Stamps = append(debug.Stamps, "no stamps found, trying direct load from sig dirs")
-		
-		// 从签章目录中加载印章
-		for _, file := range p.files {
-			lower := strings.ToLower(file)
-			if strings.Contains(lower, "sign") && 
-			   (strings.HasSuffix(lower, ".esl") || strings.HasSuffix(lower, ".png") || 
-			    strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg")) {
-				
-				imgData, err := p.readFile(file)
-				if err != nil {
-					continue
-				}
-				
-				debug.Stamps = append(debug.Stamps, "loading from sig dir: "+file)
-				
-				// 如果是 ESL 文件，提取图片
-				if strings.HasSuffix(lower, ".esl") {
-					extracted := p.extractESLImage(imgData)
-					if extracted != nil {
-						imgData = extracted
-					} else {
-						continue
-					}
-				}
-				
-				// 检测图片类型
-				mimeType := "image/png"
-				if len(imgData) > 2 && imgData[0] == 0xFF && imgData[1] == 0xD8 {
-					mimeType = "image/jpeg"
-				}
-				
-				// 使用默认位置
-				result.CanvasData.Images = append(result.CanvasData.Images, ImageData{
-					DataURL: fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgData)),
-					X:       20 * scale,
-					Y:       20 * scale,
-					Width:   40 * scale,
-					Height:  40 * scale,
-				})
-				debug.Stamps = append(debug.Stamps, "seal added from sig dir")
-			}
-		}
-	}
-	
-	// 5. 最后尝试加载所有印章文件
-	if len(result.CanvasData.Images) == 0 {
-		p.loadAllSeals(result, scale, pageIndex, debug)
+	// 如果没有找到任何印章注释，说明文档没有印章
+	if len(allAnnots) == 0 {
+		debug.Stamps = append(debug.Stamps, "no stamp annotations found in document")
+	} else if len(result.CanvasData.Images) == 0 {
+		debug.Stamps = append(debug.Stamps, fmt.Sprintf("no stamps matched for page %s (index %d)", pageID, pageIndex))
 	}
 }
 
-// loadAllSeals 直接加载所有印章文件
-func (p *Parser) loadAllSeals(result *PageRenderResult, scale float64, pageIndex int, debug *DebugInfo) {
-	// 查找所有印章文件并尝试加载
-	for _, file := range p.files {
-		lower := strings.ToLower(file)
-		if (strings.Contains(lower, "seal") || strings.Contains(lower, "stamp")) &&
-			(strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") ||
-				strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".esl")) {
-
-			imgData, err := p.readFile(file)
-			if err != nil {
-				continue
-			}
-
-			debug.Stamps = append(debug.Stamps, "loading seal: "+file)
-
-			// 如果是 ESL 文件，提取图片
-			if strings.HasSuffix(lower, ".esl") {
-				extracted := p.extractESLImage(imgData)
-				if extracted != nil {
-					imgData = extracted
-				} else {
-					continue
-				}
-			}
-
-			// 检测图片类型
-			mimeType := "image/png"
-			if len(imgData) > 2 && imgData[0] == 0xFF && imgData[1] == 0xD8 {
-				mimeType = "image/jpeg"
-			}
-
-			// 使用默认位置（左上角）
-			result.CanvasData.Images = append(result.CanvasData.Images, ImageData{
-				DataURL: fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgData)),
-				X:       20 * scale,
-				Y:       20 * scale,
-				Width:   40 * scale,
-				Height:  40 * scale,
-			})
-			debug.Stamps = append(debug.Stamps, "seal added (default position)")
-		}
-	}
-}// loadSealImage 加载印章图片
+// loadSealImage 加载印章图片
 func (p *Parser) loadSealImage(result *PageRenderResult, scale float64, sigDir string, sigID string, annot *StampAnnot, debug *DebugInfo) {
 	debug.Stamps = append(debug.Stamps, "looking for seal in: "+sigDir)
 

@@ -49,7 +49,7 @@ GOOS=js GOARCH=wasm go build -o web/ofd.wasm .
 ### 2. 启动服务器
 
 ```bash
-go run server/main.go
+go run server/main.go -port 7892
 ```
 
 ### 3. 访问
@@ -99,18 +99,15 @@ Canvas 绘制 + DOM 渲染
 ## 已知问题
 
 1. **图片渲染不完整**
-
    - 印章等圆形图片未显示
    - 需要检查 ResourceID 匹配和图片路径解析
 
 2. **文字排版偏差**
-
    - 字体映射不准确
    - 字间距计算需要优化
    - 需要支持 DeltaX/DeltaY 属性
 
 3. **坐标系统**
-
    - OFD 使用 mm 单位，需要精确转换
    - 路径坐标可能需要相对/绝对转换
 

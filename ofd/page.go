@@ -137,7 +137,7 @@ type Signatures struct {
 type Signature struct {
 	ID      string `xml:"ID,attr"`
 	Type    string `xml:"Type,attr"`
-	BaseLoc string `xml:"BaseLoc"`
+	BaseLoc string `xml:"BaseLoc,attr"` // BaseLoc 是属性，不是子元素
 }
 
 // SignatureXML 签章XML - 支持多种格式和命名空间
