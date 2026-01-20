@@ -299,13 +299,6 @@ async function renderCanvasLayer(canvas, canvasData, textLayer) {
     }
   }
 
-  // 3. 渲染文字
-  if (textLayer && textLayer.length > 0) {
-    for (const item of textLayer) {
-      drawText(ctx, item);
-    }
-  }
-
   // 4. 渲染图片（印章等，最上层）
   if (canvasData.images && canvasData.images.length > 0) {
     console.log(`渲染 ${canvasData.images.length} 个图片/印章`);
@@ -314,6 +307,13 @@ async function renderCanvasLayer(canvas, canvasData, textLayer) {
         `图片: x=${img.x}, y=${img.y}, w=${img.width}, h=${img.height}`,
       );
       await drawImage(ctx, img);
+    }
+  }
+
+  // 3. 渲染文字
+  if (textLayer && textLayer.length > 0) {
+    for (const item of textLayer) {
+      drawText(ctx, item);
     }
   }
 }
