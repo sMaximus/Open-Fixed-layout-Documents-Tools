@@ -11,7 +11,7 @@ async function initWasm() {
   const go = new Go();
   const result = await WebAssembly.instantiateStreaming(
     fetch("ofd.wasm"),
-    go.importObject
+    go.importObject,
   );
   go.run(result.instance);
   wasmReady = true;
@@ -37,7 +37,7 @@ async function loadOFDFonts() {
     // 打印每个字体的详细信息
     for (const font of fonts) {
       console.log(
-        `字体: ID=${font.id}, Name=${font.fontName}, Family=${font.familyName}, HasFile=${font.hasFile}`
+        `字体: ID=${font.id}, Name=${font.fontName}, Family=${font.familyName}, HasFile=${font.hasFile}`,
       );
     }
 
@@ -60,7 +60,7 @@ async function loadOFDFonts() {
         console.log(
           `字体 ${font.id} 没有嵌入文件，将使用系统字体: ${
             font.fontName || font.familyName
-          }`
+          }`,
         );
       }
     }
@@ -178,7 +178,7 @@ async function renderAllPages() {
       console.log(
         `页面 ${i + 1}: 文本=${page.textLayer?.length || 0}, 路径=${
           page.canvasData?.paths?.length || 0
-        }, 图片=${page.canvasData?.images?.length || 0}`
+        }, 图片=${page.canvasData?.images?.length || 0}`,
       );
 
       if (page.error) {
@@ -233,12 +233,43 @@ async function renderAllPages() {
 
         // 渲染底层 Canvas（完整视觉内容）
         console.log(
-          `渲染页面 ${i + 1}, 图片数量: ${page.canvasData?.images?.length || 0}`
+          `渲染页面 ${i + 1}, 图片数量: ${page.canvasData?.images?.length || 0}`,
         );
         await renderCanvasLayer(canvas, page.canvasData, page.textLayer);
 
         // 渲染上层透明文本（用于选择）
         renderTransparentTextLayer(textLayer, page.textLayer);
+
+        // 在所有印章上添加透明 div 层（用于选中和交互）
+        if (page.canvasData?.images) {
+          for (const img of page.canvasData.images) {
+            const sealDiv = document.createElement("div");
+            sealDiv.className = img.placeholder
+              ? "seal-placeholder"
+              : "seal-overlay";
+            sealDiv.style.cssText = `
+              position: absolute;
+              left: ${img.x}px;
+              top: ${img.y}px;
+              width: ${img.width}px;
+              height: ${img.height}px;
+              background: transparent;
+              pointer-events: auto;
+              cursor: ${img.placeholder ? "help" : "pointer"};
+              z-index: 2;
+            `;
+
+            if (img.placeholder) {
+              sealDiv.title = "印章占位框（加载失败）";
+              sealDiv.setAttribute("data-seal-placeholder", "true");
+            } else {
+              sealDiv.title = "电子印章";
+              sealDiv.setAttribute("data-seal", "true");
+            }
+
+            pageContainer.appendChild(sealDiv);
+          }
+        }
       }
 
       viewer.appendChild(pageContainer);
@@ -280,7 +311,7 @@ async function renderCanvasLayer(canvas, canvasData, textLayer) {
     console.log(`渲染 ${canvasData.images.length} 个图片/印章`);
     for (const img of canvasData.images) {
       console.log(
-        `图片: x=${img.x}, y=${img.y}, w=${img.width}, h=${img.height}`
+        `图片: x=${img.x}, y=${img.y}, w=${img.width}, h=${img.height}`,
       );
       await drawImage(ctx, img);
     }
@@ -377,7 +408,7 @@ function drawPath(ctx, pathData) {
             offsetX + cmd.x2,
             offsetY + cmd.y2,
             offsetX + cmd.x,
-            offsetY + cmd.y
+            offsetY + cmd.y,
           );
           break;
         case "Q":
@@ -385,7 +416,7 @@ function drawPath(ctx, pathData) {
             offsetX + cmd.x1,
             offsetY + cmd.y1,
             offsetX + cmd.x,
-            offsetY + cmd.y
+            offsetY + cmd.y,
           );
           break;
         case "Z":
