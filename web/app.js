@@ -335,22 +335,25 @@ function drawText(ctx, item) {
     const e = item.ctm.length > 4 ? item.ctm[4] : 0;
     const f = item.ctm.length > 5 ? item.ctm[5] : 0;
 
+    // 先平移到文字位置，再应用 CTM 变换
     ctx.translate(item.x, item.y);
     ctx.transform(a, b, c, d, e, f);
 
-    // 处理填充和描边
-    if (item.fill !== false) {
+    // 处理填充 - 后端已经计算好 fill 值
+    if (item.fill) {
       ctx.fillStyle = item.color || "#000";
       ctx.fillText(item.text, 0, 0);
     }
+
+    // 处理描边
     if (item.stroke && item.strokeColor) {
       ctx.strokeStyle = item.strokeColor;
-      ctx.lineWidth = item.lineWidth || 1;
+      ctx.lineWidth = item.lineWidth / a || 1;
       ctx.strokeText(item.text, 0, 0);
     }
   } else {
-    // 处理填充和描边
-    if (item.fill !== false) {
+    // 没有 CTM，直接绘制
+    if (item.fill) {
       ctx.fillStyle = item.color || "#000";
       ctx.fillText(item.text, item.x, item.y);
     }
@@ -358,6 +361,11 @@ function drawText(ctx, item) {
       ctx.strokeStyle = item.strokeColor;
       ctx.lineWidth = item.lineWidth || 1;
       ctx.strokeText(item.text, item.x, item.y);
+    }
+    // 如果既没有 fill 也没有 stroke，默认填充
+    if (!item.fill && !item.stroke) {
+      ctx.fillStyle = item.color || "#000";
+      ctx.fillText(item.text, item.x, item.y);
     }
   }
 
@@ -425,10 +433,42 @@ function drawPath(ctx, pathData) {
       }
     }
 
-    if (pathData.fillColor && pathData.fillColor !== "transparent") {
+    // 处理填充（纯色或渐变）
+    if (pathData.gradient) {
+      // 渐变填充
+      let gradient;
+      if (pathData.gradient.type === "linear") {
+        gradient = ctx.createLinearGradient(
+          pathData.gradient.x0,
+          pathData.gradient.y0,
+          pathData.gradient.x1,
+          pathData.gradient.y1,
+        );
+      } else if (pathData.gradient.type === "radial") {
+        gradient = ctx.createRadialGradient(
+          pathData.gradient.x0,
+          pathData.gradient.y0,
+          pathData.gradient.r0 || 0,
+          pathData.gradient.x1,
+          pathData.gradient.y1,
+          pathData.gradient.r1 || 0,
+        );
+      }
+
+      if (gradient && pathData.gradient.stops) {
+        for (const stop of pathData.gradient.stops) {
+          gradient.addColorStop(stop.position, stop.color);
+        }
+        ctx.fillStyle = gradient;
+        ctx.fill();
+      }
+    } else if (pathData.fillColor && pathData.fillColor !== "transparent") {
+      // 纯色填充
       ctx.fillStyle = pathData.fillColor;
       ctx.fill();
     }
+
+    // 处理描边
     if (pathData.strokeColor && pathData.strokeColor !== "transparent") {
       ctx.strokeStyle = pathData.strokeColor;
       ctx.lineWidth = pathData.lineWidth || 1;
@@ -451,6 +491,27 @@ function renderTransparentTextLayer(container, textItems) {
   const ascentRatio = 0.88;
 
   for (const item of textItems) {
+    // 检查是否是占位标记
+    if (item.text === "__PLACEHOLDER__") {
+      // 创建透明占位 div
+      const placeholderDiv = document.createElement("div");
+      console.log(item);
+      placeholderDiv.style.cssText = `
+        position: absolute;
+        left: ${item.x}px;
+        top: ${item.y}px;
+        width: ${item.width}px;
+        height: ${item.height}px;
+        background: transparent;
+        pointer-events: none;
+        z-index: 3;
+      `;
+
+      placeholderDiv.setAttribute("data-placeholder", "true");
+      container.appendChild(placeholderDiv);
+      continue;
+    }
+
     const span = document.createElement("span");
     span.textContent = item.text;
 

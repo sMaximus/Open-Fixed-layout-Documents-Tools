@@ -41,12 +41,31 @@ type CanvasRenderData struct {
 
 // PathData 路径数据
 type PathData struct {
-	Commands    string  `json:"commands"`
-	FillColor   string  `json:"fillColor,omitempty"`
-	StrokeColor string  `json:"strokeColor,omitempty"`
-	LineWidth   float64 `json:"lineWidth"`
-	X           float64 `json:"x"`
-	Y           float64 `json:"y"`
+	Commands    string           `json:"commands"`
+	FillColor   string           `json:"fillColor,omitempty"`
+	StrokeColor string           `json:"strokeColor,omitempty"`
+	LineWidth   float64          `json:"lineWidth"`
+	X           float64          `json:"x"`
+	Y           float64          `json:"y"`
+	Gradient    *GradientData    `json:"gradient,omitempty"`
+}
+
+// GradientData 渐变数据
+type GradientData struct {
+	Type       string          `json:"type"` // "linear" 或 "radial"
+	X0         float64         `json:"x0"`
+	Y0         float64         `json:"y0"`
+	X1         float64         `json:"x1"`
+	Y1         float64         `json:"y1"`
+	R0         float64         `json:"r0,omitempty"` // 径向渐变起始半径
+	R1         float64         `json:"r1,omitempty"` // 径向渐变结束半径
+	Stops      []GradientStop  `json:"stops"`
+}
+
+// GradientStop 渐变色标
+type GradientStop struct {
+	Position float64 `json:"position"`
+	Color    string  `json:"color"`
 }
 
 // ImageData 图片数据
@@ -63,15 +82,17 @@ type TextItem struct {
 	Text        string    `json:"text"`
 	X           float64   `json:"x"`
 	Y           float64   `json:"y"`
+	Width       float64   `json:"width,omitempty"`       // 宽度（用于占位框）
+	Height      float64   `json:"height,omitempty"`      // 高度（用于占位框）
 	FontSize    float64   `json:"fontSize"`
 	FontFamily  string    `json:"fontFamily"`
 	FontID      string    `json:"fontID"`
 	Color       string    `json:"color"`
 	CTM         []float64 `json:"ctm,omitempty"`         // 变换矩阵 [a, b, c, d, e, f]
-	Stroke      bool      `json:"stroke,omitempty"`      // 是否描边
+	Stroke      bool      `json:"stroke"`                // 是否描边
 	StrokeColor string    `json:"strokeColor,omitempty"` // 描边颜色
 	LineWidth   float64   `json:"lineWidth,omitempty"`   // 描边线宽
-	Fill        bool      `json:"fill,omitempty"`        // 是否填充
+	Fill        bool      `json:"fill"`                  // 是否填充
 }
 
 // FontInfo 字体信息
@@ -425,9 +446,10 @@ func (p *Parser) extractRenderData(result *PageRenderResult, page *Page, scale f
 func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex int, debug *DebugInfo) {
 	// 收集所有印章注释
 	var allAnnots []struct {
-		annot  StampAnnot
-		sigDir string
-		sigID  string
+		annot         StampAnnot
+		sigDir        string
+		sigID         string
+		isPrivateAlgo bool
 	}
 
 	// 1. 查找 Signatures.xml
@@ -480,17 +502,18 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 					continue
 				}
 
-				// 尝试解析签章 XML（支持多种格式）
-				annots := p.parseSignatureXML(sigData, debug)
+				// 尝试解析签章 XML（支持多种格式）并获取算法类型
+				annots, isPrivateAlgo := p.parseSignatureXMLWithAlgo(sigData, debug)
 				sigDir := path.Dir(sigPath)
 
 				for _, annot := range annots {
-					debug.Stamps = append(debug.Stamps, fmt.Sprintf("annot: pageRef=%s, boundary=%s", annot.PageRef, annot.Boundary))
+					debug.Stamps = append(debug.Stamps, fmt.Sprintf("annot: pageRef=%s, boundary=%s, privateAlgo=%v", annot.PageRef, annot.Boundary, isPrivateAlgo))
 					allAnnots = append(allAnnots, struct {
-						annot  StampAnnot
-						sigDir string
-						sigID  string
-					}{annot, sigDir, sig.ID})
+						annot         StampAnnot
+						sigDir        string
+						sigID         string
+						isPrivateAlgo bool
+					}{annot, sigDir, sig.ID, isPrivateAlgo})
 				}
 			}
 		}
@@ -518,9 +541,10 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 					   strings.Contains(strings.ToLower(annot.Type), "stamp") {
 						debug.Stamps = append(debug.Stamps, fmt.Sprintf("found stamp annot: %s, boundary=%s", annot.ID, annot.Appearance.Boundary))
 						allAnnots = append(allAnnots, struct {
-							annot  StampAnnot
-							sigDir string
-							sigID  string
+							annot         StampAnnot
+							sigDir        string
+							sigID         string
+							isPrivateAlgo bool
 						}{
 							StampAnnot{
 								ID:       annot.ID,
@@ -529,6 +553,7 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 							},
 							path.Dir(file),
 							annot.ID,
+							false, // 页面注释默认不是私有算法
 						})
 					}
 				}
@@ -545,9 +570,10 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 					if len(boundaryMatch) >= 2 {
 						debug.Stamps = append(debug.Stamps, fmt.Sprintf("regex found annot: boundary=%s", boundaryMatch[1]))
 						allAnnots = append(allAnnots, struct {
-							annot  StampAnnot
-							sigDir string
-							sigID  string
+							annot         StampAnnot
+							sigDir        string
+							sigID         string
+							isPrivateAlgo bool
 						}{
 							StampAnnot{
 								PageRef:  fmt.Sprintf("%d", pageIndex),
@@ -555,6 +581,7 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 							},
 							path.Dir(file),
 							"",
+							false, // 正则提取的默认不是私有算法
 						})
 					}
 				}
@@ -585,11 +612,17 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 		// StampAnnot 的 PageRef 应该等于 Document.xml 中定义的页面 ID
 		matched := item.annot.PageRef == pageID
 		
-		debug.Stamps = append(debug.Stamps, fmt.Sprintf("checking annot: pageRef=%s, currentPageID=%s, matched=%v", 
-			item.annot.PageRef, pageID, matched))
+		debug.Stamps = append(debug.Stamps, fmt.Sprintf("checking annot: pageRef=%s, currentPageID=%s, matched=%v, privateAlgo=%v", 
+			item.annot.PageRef, pageID, matched, item.isPrivateAlgo))
 		
 		if matched {
-			p.loadSealImage(result, scale, item.sigDir, item.sigID, &item.annot, debug)
+			if item.isPrivateAlgo {
+				// 私有算法：只显示占位框
+				p.addPlaceholderStamp(result, scale, &item.annot, debug)
+			} else {
+				// 标准算法：加载真实印章图片
+				p.loadSealImage(result, scale, item.sigDir, item.sigID, &item.annot, debug)
+			}
 		}
 	}
 
@@ -715,6 +748,30 @@ func (p *Parser) loadSealImage(result *PageRenderResult, scale float64, sigDir s
 	debug.Stamps = append(debug.Stamps, "no seal image found")
 }
 
+// addPlaceholderStamp 添加占位框（用于私有算法的印章）
+func (p *Parser) addPlaceholderStamp(result *PageRenderResult, scale float64, annot *StampAnnot, debug *DebugInfo) {
+	// 解析边界
+	x, y, w, h := parseBoundary(annot.Boundary)
+	if w == 0 || h == 0 {
+		debug.Stamps = append(debug.Stamps, "invalid boundary for placeholder, using default size")
+		w = 40
+		h = 40
+	}
+	
+	debug.Stamps = append(debug.Stamps, fmt.Sprintf("adding placeholder at (%f,%f) size (%f,%f)", x*scale, y*scale, w*scale, h*scale))
+	
+	// 添加一个特殊的 TextItem 作为占位标记
+	// 使用特殊的 Text 值 "__PLACEHOLDER__" 来标识这是一个占位框
+	result.TextLayer = append(result.TextLayer, TextItem{
+		Text:   "__PLACEHOLDER__",
+		X:      x * scale,
+		Y:      y * scale,
+		Width:  w * scale,
+		Height: h * scale,
+		Color:  "transparent",
+	})
+}
+
 // extractSealFromXML 从 Seal.xml 文件中提取图片
 func (p *Parser) extractSealFromXML(data []byte, debug *DebugInfo) []byte {
 	// 尝试解析 Seal.xml
@@ -822,6 +879,20 @@ func (p *Parser) extractImage(result *PageRenderResult, img *ImageObject, scale 
 
 	x, y, w, h := parseBoundary(img.Boundary)
 
+	// 如果有 CTM，使用 CTM 来确定位置和大小
+	if img.CTM != "" {
+		ctm := parseCTM(img.CTM)
+		if len(ctm) >= 6 {
+			// CTM 格式: [a, b, c, d, e, f]
+			// a, d 是缩放，e, f 是平移
+			w = ctm[0] // 宽度缩放
+			h = ctm[3] // 高度缩放
+			// 平移量已经在 mm 单位，需要转换为像素
+			// 注意：有些 OFD 的 CTM 中 e, f 可能已经是相对于 Boundary 的
+			// 这里我们使用 Boundary 的 x, y 作为基准
+		}
+	}
+
 	mimeType := "image/png"
 	if len(imgData) > 2 && imgData[0] == 0xFF && imgData[1] == 0xD8 {
 		mimeType = "image/jpeg"
@@ -844,6 +915,7 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 
 	strokeColor := ""
 	fillColor := ""
+	var gradient *GradientData
 	
 	// 处理描边颜色
 	if pathObj.StrokeColor != nil && pathObj.StrokeColor.Value != "" {
@@ -853,12 +925,27 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 		strokeColor = "#000"
 	}
 	
-	// 处理填充颜色
-	if pathObj.FillColor != nil && pathObj.FillColor.Value != "" {
-		fillColor = parseColor(pathObj.FillColor.Value)
+	// 解析 CTM 变换矩阵
+	var ctm []float64
+	if pathObj.CTM != "" {
+		ctm = parseCTM(pathObj.CTM)
+	}
+	
+	// 处理填充颜色或渐变
+	if pathObj.FillColor != nil {
+		if pathObj.FillColor.Value != "" {
+			// 纯色填充
+			fillColor = parseColor(pathObj.FillColor.Value)
+		} else if pathObj.FillColor.AxialShd != nil {
+			// 轴向渐变（线性渐变）
+			gradient = p.parseAxialShd(pathObj.FillColor.AxialShd, ctm, scale)
+		} else if pathObj.FillColor.RadialShd != nil {
+			// 径向渐变
+			gradient = p.parseRadialShd(pathObj.FillColor.RadialShd, ctm, scale)
+		}
 	}
 
-	// 解析边界框
+	// 解析边界框（Boundary 定义了对象在页面上的位置）
 	bx, by, _, _ := parseBoundary(pathObj.Boundary)
 	
 	// 默认线宽
@@ -866,16 +953,162 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 	if lineWidth == 0 {
 		lineWidth = 0.353 // 默认 1pt = 0.353mm
 	}
+	
+	// 如果有 CTM 变换矩阵，lineWidth 需要乘以 CTM 的缩放因子
+	// CTM 格式: [a, b, c, d, e, f]，其中 a 是 x 方向缩放因子
+	// OFD 中 LineWidth 是在对象坐标系中定义的，需要乘以 CTM 缩放来得到页面坐标系中的线宽
+	if len(ctm) >= 1 && ctm[0] > 0 {
+		lineWidth = lineWidth * ctm[0]
+	}
 
-	// OFD 路径坐标是相对于边界框的，需要加上边界框偏移
+	// 正确的坐标变换流程：
+	// 1. PathObject 的 AbbreviatedData 中的坐标是相对于对象自身坐标系的（通常从 0,0 开始）
+	// 2. CTM 定义了对象坐标系到页面坐标系的变换（缩放 + 旋转）
+	// 3. Boundary 定义了对象在页面上的位置（平移）
+	// 
+	// 变换顺序：对象坐标 -> CTM 变换（缩放） -> Boundary 平移 -> 像素缩放
+	
+	// 将渐变坐标转换为绝对坐标
+	if gradient != nil {
+		// 渐变坐标也需要应用 CTM 和 Boundary
+		if len(ctm) >= 6 {
+			// 渐变坐标已经在 parseAxialShd/parseRadialShd 中应用了 CTM
+			// 这里只需要加上 Boundary 偏移
+			gradient.X0 = (gradient.X0 + bx) * scale
+			gradient.Y0 = (gradient.Y0 + by) * scale
+			gradient.X1 = (gradient.X1 + bx) * scale
+			gradient.Y1 = (gradient.Y1 + by) * scale
+		} else {
+			// 没有 CTM，直接加上 Boundary 偏移
+			gradient.X0 = (bx + gradient.X0) * scale
+			gradient.Y0 = (by + gradient.Y0) * scale
+			gradient.X1 = (bx + gradient.X1) * scale
+			gradient.Y1 = (by + gradient.Y1) * scale
+		}
+		if gradient.R0 > 0 {
+			gradient.R0 = gradient.R0 * scale
+		}
+		if gradient.R1 > 0 {
+			gradient.R1 = gradient.R1 * scale
+		}
+	}
+
+	// 转换路径命令：应用 CTM 缩放和 Boundary 平移
 	result.CanvasData.Paths = append(result.CanvasData.Paths, PathData{
-		Commands:    convertOFDPathToCanvas(pathObj.AbbreviatedData, scale, bx, by),
+		Commands:    convertOFDPathToCanvasWithCTM(pathObj.AbbreviatedData, scale, bx, by, ctm),
 		FillColor:   fillColor,
 		StrokeColor: strokeColor,
 		LineWidth:   lineWidth * scale,
+		Gradient:    gradient,
 		X:           0,
 		Y:           0,
 	})
+}
+
+// parseAxialShd 解析轴向渐变
+func (p *Parser) parseAxialShd(shd *AxialShd, ctm []float64, scale float64) *GradientData {
+	if shd == nil {
+		return nil
+	}
+	
+	// 解析起点和终点
+	startParts := strings.Fields(shd.StartPoint)
+	endParts := strings.Fields(shd.EndPoint)
+	
+	if len(startParts) < 2 || len(endParts) < 2 {
+		return nil
+	}
+	
+	x0, _ := strconv.ParseFloat(startParts[0], 64)
+	y0, _ := strconv.ParseFloat(startParts[1], 64)
+	x1, _ := strconv.ParseFloat(endParts[0], 64)
+	y1, _ := strconv.ParseFloat(endParts[1], 64)
+	
+	// 如果有 CTM，应用变换到渐变坐标
+	// CTM 格式: [a, b, c, d, e, f]
+	// 变换公式: x' = a*x + c*y + e, y' = b*x + d*y + f
+	if len(ctm) >= 6 {
+		origX0 := x0
+		origY0 := y0
+		origX1 := x1
+		origY1 := y1
+		
+		x0 = origX0*ctm[0] + origY0*ctm[2] + ctm[4]
+		y0 = origX0*ctm[1] + origY0*ctm[3] + ctm[5]
+		x1 = origX1*ctm[0] + origY1*ctm[2] + ctm[4]
+		y1 = origX1*ctm[1] + origY1*ctm[3] + ctm[5]
+	}
+	
+	// 解析渐变色标
+	stops := make([]GradientStop, 0, len(shd.Segment))
+	for _, seg := range shd.Segment {
+		stops = append(stops, GradientStop{
+			Position: seg.Position,
+			Color:    parseColor(seg.Color.Value),
+		})
+	}
+	
+	return &GradientData{
+		Type:  "linear",
+		X0:    x0,
+		Y0:    y0,
+		X1:    x1,
+		Y1:    y1,
+		Stops: stops,
+	}
+}
+
+// parseRadialShd 解析径向渐变
+func (p *Parser) parseRadialShd(shd *RadialShd, ctm []float64, scale float64) *GradientData {
+	if shd == nil {
+		return nil
+	}
+	
+	// 解析起点和终点
+	startParts := strings.Fields(shd.StartPoint)
+	endParts := strings.Fields(shd.EndPoint)
+	
+	if len(startParts) < 2 || len(endParts) < 2 {
+		return nil
+	}
+	
+	x0, _ := strconv.ParseFloat(startParts[0], 64)
+	y0, _ := strconv.ParseFloat(startParts[1], 64)
+	x1, _ := strconv.ParseFloat(endParts[0], 64)
+	y1, _ := strconv.ParseFloat(endParts[1], 64)
+	
+	// 如果有 CTM，应用变换到渐变坐标
+	if len(ctm) >= 6 {
+		origX0 := x0
+		origY0 := y0
+		origX1 := x1
+		origY1 := y1
+		
+		x0 = origX0*ctm[0] + origY0*ctm[2] + ctm[4]
+		y0 = origX0*ctm[1] + origY0*ctm[3] + ctm[5]
+		x1 = origX1*ctm[0] + origY1*ctm[2] + ctm[4]
+		y1 = origX1*ctm[1] + origY1*ctm[3] + ctm[5]
+	}
+	
+	// 解析渐变色标
+	stops := make([]GradientStop, 0, len(shd.Segment))
+	for _, seg := range shd.Segment {
+		stops = append(stops, GradientStop{
+			Position: seg.Position,
+			Color:    parseColor(seg.Color.Value),
+		})
+	}
+	
+	return &GradientData{
+		Type:  "radial",
+		X0:    x0,
+		Y0:    y0,
+		X1:    x1,
+		Y1:    y1,
+		R0:    shd.StartRadius,
+		R1:    shd.EndRadius,
+		Stops: stops,
+	}
 }
 
 
@@ -914,10 +1147,29 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 		color = strokeColor
 	}
 
+	// 确定是否填充：默认填充，除非只有描边且没有显式设置 Fill
+	// OFD 规范中，文字默认是填充的
+	shouldFill := true
+	if text.Stroke && !text.Fill {
+		// 只有描边，没有填充 - 但为了视觉效果，仍然填充
+		// 因为纯描边文字看起来是空心的，不符合预期
+		shouldFill = true
+	}
+
 	// 处理描边线宽
 	lineWidth := text.LineWidth * scale
 	if lineWidth == 0 && text.Stroke {
 		lineWidth = 1 // 默认描边宽度
+	}
+	
+	// 如果有 CTM 变换矩阵，lineWidth 需要乘以 CTM 的缩放因子
+	// CTM 格式: [a, b, c, d, e, f]，其中 a 是 x 方向缩放因子
+	// OFD 中 LineWidth 是在对象坐标系中定义的，需要乘以 CTM 缩放来得到页面坐标系中的线宽
+	if text.CTM != "" && lineWidth > 0 {
+		ctmScale := parseCTM(text.CTM)
+		if len(ctmScale) >= 1 && ctmScale[0] > 0 {
+			lineWidth = lineWidth * ctmScale[0]
+		}
 	}
 
 	// 解析 CTM 变换矩阵，并转换 e, f 为像素
@@ -935,6 +1187,32 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 
 	for _, tc := range text.TextCode {
 		content := strings.TrimSpace(tc.Content)
+		
+		// 如果有 CGTransform，尝试使用字形映射
+		if len(text.CGTransform) > 0 {
+			// 查找对应的 CGTransform
+			for _, cgt := range text.CGTransform {
+				// CGTransform 的 Glyphs 包含字形 ID，尝试转换为 Unicode 字符
+				if cgt.Glyphs != "" {
+					glyphIDs := strings.Fields(cgt.Glyphs)
+					var chars []rune
+					for _, gidStr := range glyphIDs {
+						gid, err := strconv.Atoi(gidStr)
+						if err == nil && gid > 0 {
+							// 尝试将字形 ID 作为 Unicode 码点
+							// 注意：这是简化处理，实际应该查询字体的 CMap
+							if gid < 0x110000 { // 有效的 Unicode 范围
+								chars = append(chars, rune(gid))
+							}
+						}
+					}
+					if len(chars) > 0 {
+						content = string(chars)
+					}
+				}
+			}
+		}
+		
 		if content == "" {
 			continue
 		}
@@ -975,7 +1253,7 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 					Stroke:      text.Stroke,
 					StrokeColor: strokeColor,
 					LineWidth:   lineWidth,
-					Fill:        text.Fill || !text.Stroke, // 默认填充
+					Fill:        shouldFill,
 				})
 
 				// 计算下一个字符的位置
@@ -1001,7 +1279,7 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 				Stroke:      text.Stroke,
 				StrokeColor: strokeColor,
 				LineWidth:   lineWidth,
-				Fill:        text.Fill || !text.Stroke,
+				Fill:        shouldFill,
 			})
 		}
 	}
@@ -1054,9 +1332,27 @@ func parseDeltas(deltaStr string) []float64 {
 	return result
 }
 
-// convertOFDPathToCanvas 转换OFD路径命令为Canvas命令JSON
-func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64) string {
+// convertOFDPathToCanvasWithCTM 转换OFD路径命令为Canvas命令JSON，应用CTM变换
+func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY float64, ctm []float64) string {
 	var commands []map[string]interface{}
+	
+	// CTM 变换函数：将对象坐标系的点变换到页面坐标系
+	// CTM 格式: [a, b, c, d, e, f]
+	// 变换公式: x' = a*x + c*y + e, y' = b*x + d*y + f
+	transformPoint := func(x, y float64) (float64, float64) {
+		if len(ctm) >= 6 {
+			// 先应用 CTM 变换（缩放和旋转）
+			tx := ctm[0]*x + ctm[2]*y + ctm[4]
+			ty := ctm[1]*x + ctm[3]*y + ctm[5]
+			// 再加上 Boundary 偏移
+			tx += offsetX
+			ty += offsetY
+			// 最后转换为像素
+			return tx * scale, ty * scale
+		}
+		// 没有 CTM，直接加上 Boundary 偏移并转换为像素
+		return (offsetX + x) * scale, (offsetY + y) * scale
+	}
 	
 	// 简化解析：按空格分割
 	parts := strings.Fields(data)
@@ -1069,8 +1365,9 @@ func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64
 			if i+2 < len(parts) {
 				x, _ := strconv.ParseFloat(parts[i+1], 64)
 				y, _ := strconv.ParseFloat(parts[i+2], 64)
+				tx, ty := transformPoint(x, y)
 				commands = append(commands, map[string]interface{}{
-					"cmd": "M", "x": (offsetX + x) * scale, "y": (offsetY + y) * scale,
+					"cmd": "M", "x": tx, "y": ty,
 				})
 				i += 3
 			} else {
@@ -1080,8 +1377,9 @@ func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64
 			if i+2 < len(parts) {
 				x, _ := strconv.ParseFloat(parts[i+1], 64)
 				y, _ := strconv.ParseFloat(parts[i+2], 64)
+				tx, ty := transformPoint(x, y)
 				commands = append(commands, map[string]interface{}{
-					"cmd": "L", "x": (offsetX + x) * scale, "y": (offsetY + y) * scale,
+					"cmd": "L", "x": tx, "y": ty,
 				})
 				i += 3
 			} else {
@@ -1095,11 +1393,14 @@ func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64
 				y2, _ := strconv.ParseFloat(parts[i+4], 64)
 				x3, _ := strconv.ParseFloat(parts[i+5], 64)
 				y3, _ := strconv.ParseFloat(parts[i+6], 64)
+				tx1, ty1 := transformPoint(x1, y1)
+				tx2, ty2 := transformPoint(x2, y2)
+				tx3, ty3 := transformPoint(x3, y3)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "C",
-					"x1": (offsetX + x1) * scale, "y1": (offsetY + y1) * scale,
-					"x2": (offsetX + x2) * scale, "y2": (offsetY + y2) * scale,
-					"x":  (offsetX + x3) * scale, "y":  (offsetY + y3) * scale,
+					"x1": tx1, "y1": ty1,
+					"x2": tx2, "y2": ty2,
+					"x":  tx3, "y":  ty3,
 				})
 				i += 7
 			} else {
@@ -1111,10 +1412,12 @@ func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64
 				y1, _ := strconv.ParseFloat(parts[i+2], 64)
 				x2, _ := strconv.ParseFloat(parts[i+3], 64)
 				y2, _ := strconv.ParseFloat(parts[i+4], 64)
+				tx1, ty1 := transformPoint(x1, y1)
+				tx2, ty2 := transformPoint(x2, y2)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "Q",
-					"x1": (offsetX + x1) * scale, "y1": (offsetY + y1) * scale,
-					"x":  (offsetX + x2) * scale, "y":  (offsetY + y2) * scale,
+					"x1": tx1, "y1": ty1,
+					"x":  tx2, "y":  ty2,
 				})
 				i += 5
 			} else {
@@ -1132,6 +1435,11 @@ func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64
 	
 	jsonData, _ := json.Marshal(commands)
 	return string(jsonData)
+}
+
+// convertOFDPathToCanvas 转换OFD路径命令为Canvas命令JSON（向后兼容）
+func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64) string {
+	return convertOFDPathToCanvasWithCTM(data, scale, offsetX, offsetY, nil)
 }
 
 func parseBoundary(boundary string) (x, y, w, h float64) {
@@ -1158,8 +1466,34 @@ func parseColor(value string) string {
 
 // parseSignatureXML 解析签章XML，支持多种格式
 func (p *Parser) parseSignatureXML(data []byte, debug *DebugInfo) []StampAnnot {
+	annots, _ := p.parseSignatureXMLWithAlgo(data, debug)
+	return annots
+}
+
+// parseSignatureXMLWithAlgo 解析签章XML并返回算法类型
+func (p *Parser) parseSignatureXMLWithAlgo(data []byte, debug *DebugInfo) ([]StampAnnot, bool) {
 	var annots []StampAnnot
 	content := string(data)
+	isPrivateAlgo := false
+
+	// 识别签名算法
+	methodRe := regexp.MustCompile(`<(?:\w+:)?SignatureMethod[^>]*>([^<]+)</(?:\w+:)?SignatureMethod>`)
+	if methodMatch := methodRe.FindStringSubmatch(content); len(methodMatch) >= 2 {
+		signatureMethod := strings.TrimSpace(methodMatch[1])
+		
+		// 判断是否为标准算法
+		isStandard := strings.HasPrefix(signatureMethod, "1.2.156") || // 中国 OID
+			strings.HasPrefix(signatureMethod, "1.2.840") || // 美国 OID
+			strings.HasPrefix(signatureMethod, "1.3.") // 其他标准 OID
+		
+		if isStandard {
+			debug.Stamps = append(debug.Stamps, fmt.Sprintf("标准算法: %s", signatureMethod))
+			isPrivateAlgo = false
+		} else {
+			debug.Stamps = append(debug.Stamps, fmt.Sprintf("私有算法: %s (将使用占位框)", signatureMethod))
+			isPrivateAlgo = true
+		}
+	}
 
 	// 打印 XML 内容的前1000字符用于调试
 	preview := content
@@ -1176,7 +1510,7 @@ func (p *Parser) parseSignatureXML(data []byte, debug *DebugInfo) []StampAnnot {
 		annots = append(annots, sigXML.SignedInfo.StampAnnotOFD...)
 		if len(annots) > 0 {
 			debug.Stamps = append(debug.Stamps, fmt.Sprintf("parsed with SignatureXML: %d annots", len(annots)))
-			return annots
+			return annots, isPrivateAlgo
 		}
 	}
 
@@ -1188,7 +1522,7 @@ func (p *Parser) parseSignatureXML(data []byte, debug *DebugInfo) []StampAnnot {
 		annots = append(annots, sigXMLNS.SignedInfo.StampAnnotOFD...)
 		if len(annots) > 0 {
 			debug.Stamps = append(debug.Stamps, fmt.Sprintf("parsed with SignatureXMLNS: %d annots", len(annots)))
-			return annots
+			return annots, isPrivateAlgo
 		}
 	}
 
@@ -1308,5 +1642,5 @@ func (p *Parser) parseSignatureXML(data []byte, debug *DebugInfo) []StampAnnot {
 		}
 	}
 
-	return annots
+	return annots, isPrivateAlgo
 }

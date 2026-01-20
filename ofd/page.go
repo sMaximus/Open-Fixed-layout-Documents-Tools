@@ -73,14 +73,15 @@ type CGTransform struct {
 
 // PathObject 路径对象
 type PathObject struct {
-	ID              string  `xml:"ID,attr"`
-	Boundary        string  `xml:"Boundary,attr"`
-	LineWidth       float64 `xml:"LineWidth,attr"`
-	Stroke          bool    `xml:"Stroke,attr"`
-	Fill            bool    `xml:"Fill,attr"`
-	FillColor       *Color  `xml:"FillColor"`
-	StrokeColor     *Color  `xml:"StrokeColor"`
-	AbbreviatedData string  `xml:"AbbreviatedData"`
+	ID              string       `xml:"ID,attr"`
+	Boundary        string       `xml:"Boundary,attr"`
+	CTM             string       `xml:"CTM,attr"`
+	LineWidth       float64      `xml:"LineWidth,attr"`
+	Stroke          bool         `xml:"Stroke,attr"`
+	Fill            bool         `xml:"Fill,attr"`
+	FillColor       *ColorOrShd  `xml:"FillColor"`
+	StrokeColor     *Color       `xml:"StrokeColor"`
+	AbbreviatedData string       `xml:"AbbreviatedData"`
 }
 
 // ImageObject 图像对象
@@ -95,6 +96,38 @@ type ImageObject struct {
 type Color struct {
 	Value      string `xml:"Value,attr"`
 	ColorSpace string `xml:"ColorSpace,attr"`
+}
+
+// ColorOrShd 颜色或渐变
+type ColorOrShd struct {
+	Value      string   `xml:"Value,attr"`
+	ColorSpace string   `xml:"ColorSpace,attr"`
+	AxialShd   *AxialShd `xml:"AxialShd"`
+	RadialShd  *RadialShd `xml:"RadialShd"`
+}
+
+// AxialShd 轴向渐变（线性渐变）
+type AxialShd struct {
+	StartPoint string    `xml:"StartPoint,attr"`
+	EndPoint   string    `xml:"EndPoint,attr"`
+	Extend     string    `xml:"Extend,attr"`
+	Segment    []Segment `xml:"Segment"`
+}
+
+// RadialShd 径向渐变
+type RadialShd struct {
+	StartPoint string    `xml:"StartPoint,attr"`
+	EndPoint   string    `xml:"EndPoint,attr"`
+	StartRadius float64  `xml:"StartRadius,attr"`
+	EndRadius   float64  `xml:"EndRadius,attr"`
+	Extend      string   `xml:"Extend,attr"`
+	Segment     []Segment `xml:"Segment"`
+}
+
+// Segment 渐变段
+type Segment struct {
+	Position float64 `xml:"Position,attr"`
+	Color    Color   `xml:"Color"`
 }
 
 // Res 资源文件
