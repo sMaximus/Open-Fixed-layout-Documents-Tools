@@ -68,6 +68,7 @@ type TextCode struct {
 type CGTransform struct {
 	CodePosition int    `xml:"CodePosition,attr"`
 	CodeCount    int    `xml:"CodeCount,attr"`
+	GlyphCount   int    `xml:"GlyphCount,attr"`
 	Glyphs       string `xml:"Glyphs,attr"`
 }
 
@@ -272,5 +273,41 @@ type Annot struct {
 
 // Appearance 外观
 type Appearance struct {
-	Boundary string `xml:"Boundary,attr"`
+	Boundary   string      `xml:"Boundary,attr"`
+	PageBlocks []PageBlock `xml:"PageBlock"`
+}
+
+// PageBlock 页面块
+type PageBlock struct {
+	ID           string        `xml:"ID,attr"`
+	ImageObjects []ImageObject `xml:"ImageObject"`
+	PathObjects  []PathObject  `xml:"PathObject"`
+	TextObjects  []TextObject  `xml:"TextObject"`
+}
+
+// PageAnnot 页面注释（用于解析注释文件）
+type PageAnnot struct {
+	XMLName xml.Name       `xml:"PageAnnot"`
+	Annots  []AnnotElement `xml:"Annot"`
+}
+
+// AnnotElement 注释元素
+type AnnotElement struct {
+	ID         string            `xml:"ID,attr"`
+	Type       string            `xml:"Type,attr"`
+	Creator    string            `xml:"Creator,attr"`
+	Subtype    string            `xml:"Subtype,attr"`
+	Appearance AnnotAppearance   `xml:"Appearance"`
+}
+
+// AnnotAppearance 注释外观
+type AnnotAppearance struct {
+	Boundary   string            `xml:"Boundary,attr"`
+	PageBlocks []AnnotPageBlock  `xml:"PageBlock"`
+}
+
+// AnnotPageBlock 注释页面块
+type AnnotPageBlock struct {
+	ID           string        `xml:"ID,attr"`
+	ImageObjects []ImageObject `xml:"ImageObject"`
 }

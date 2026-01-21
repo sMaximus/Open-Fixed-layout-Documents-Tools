@@ -240,9 +240,12 @@ async function renderAllPages() {
         // 渲染上层透明文本（用于选择）
         renderTransparentTextLayer(textLayer, page.textLayer);
 
-        // 在所有印章上添加透明 div 层（用于选中和交互）
+        // 只为印章图片添加透明 div 层（用于选中和交互）
         if (page.canvasData?.images) {
           for (const img of page.canvasData.images) {
+            // 只为印章添加蒙层，普通图片不需要
+            if (!img.isSeal) continue;
+
             const sealDiv = document.createElement("div");
             sealDiv.className = img.placeholder
               ? "seal-placeholder"
@@ -324,7 +327,11 @@ function drawText(ctx, item) {
 
   let fontFamily = item.fontFamily;
   ctx.font = `${item.fontSize}px ${fontFamily}`;
+  // ctx.textBaseline = "alphabetic";
+
   ctx.textBaseline = "alphabetic";
+  const ascentRatio = 0.88; // 与 HTML 保持完全一致的魔法数值
+  const correctedY = item.y - item.fontSize * ascentRatio;
 
   // 应用 CTM 变换矩阵
   if (item.ctm && item.ctm.length >= 4) {
@@ -336,7 +343,7 @@ function drawText(ctx, item) {
     const f = item.ctm.length > 5 ? item.ctm[5] : 0;
 
     // 先平移到文字位置，再应用 CTM 变换
-    ctx.translate(item.x, item.y);
+    ctx.translate(item.x, correctedY);
     ctx.transform(a, b, c, d, e, f);
 
     // 处理填充 - 后端已经计算好 fill 值
@@ -355,17 +362,17 @@ function drawText(ctx, item) {
     // 没有 CTM，直接绘制
     if (item.fill) {
       ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, item.x, item.y);
+      ctx.fillText(item.text, item.x, correctedY);
     }
     if (item.stroke && item.strokeColor) {
       ctx.strokeStyle = item.strokeColor;
       ctx.lineWidth = item.lineWidth || 1;
-      ctx.strokeText(item.text, item.x, item.y);
+      ctx.strokeText(item.text, item.x, correctedY);
     }
     // 如果既没有 fill 也没有 stroke，默认填充
     if (!item.fill && !item.stroke) {
       ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, item.x, item.y);
+      ctx.fillText(item.text, item.x, correctedY);
     }
   }
 
@@ -377,8 +384,28 @@ function drawImage(ctx, imgData) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      console.log(`图片加载成功: ${imgData.width}x${imgData.height}`);
-      ctx.drawImage(img, imgData.x, imgData.y, imgData.width, imgData.height);
+      ctx.save();
+
+      // 如果有 CTM 变换（旋转/倾斜）
+      if (imgData.ctm && imgData.ctm.length >= 4) {
+        const [a, b, c, d, e, f] = imgData.ctm;
+
+        // 移动到 Boundary 的位置
+        ctx.translate(imgData.x, imgData.y);
+
+        // 图片在对象坐标系中是单位正方形 (0,0)-(1,1)
+        // CTM 将其变换到实际尺寸和旋转
+        // 需要将 CTM 应用到单位正方形，然后绘制图片
+        ctx.transform(a, b, c, d, e || 0, f || 0);
+
+        // 绘制单位正方形大小的图片（CTM 会将其变换到正确尺寸）
+        ctx.drawImage(img, 0, 0, 1, 1);
+      } else {
+        // 普通绘制，直接使用 Boundary 的尺寸
+        ctx.drawImage(img, imgData.x, imgData.y, imgData.width, imgData.height);
+      }
+
+      ctx.restore();
       resolve();
     };
     img.onerror = (err) => {
