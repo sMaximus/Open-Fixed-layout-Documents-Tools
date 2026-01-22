@@ -78,6 +78,8 @@ type PathObject struct {
 	Boundary        string       `xml:"Boundary,attr"`
 	CTM             string       `xml:"CTM,attr"`
 	LineWidth       float64      `xml:"LineWidth,attr"`
+	Join            string       `xml:"Join,attr"`        // 线条连接样式：Miter, Round, Bevel
+	Cap             string       `xml:"Cap,attr"`         // 线条端点样式：Butt, Round, Square
 	Stroke          bool         `xml:"Stroke,attr"`
 	Fill            bool         `xml:"Fill,attr"`
 	FillColor       *ColorOrShd  `xml:"FillColor"`

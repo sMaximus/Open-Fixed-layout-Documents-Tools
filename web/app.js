@@ -426,6 +426,7 @@ function drawImage(ctx, imgData) {
 function drawPath(ctx, pathData) {
   try {
     const commands = JSON.parse(pathData.commands);
+    console.log("Path Commands:", commands.length, commands);
     if (!commands || commands.length === 0) return;
 
     ctx.save();
@@ -505,6 +506,26 @@ function drawPath(ctx, pathData) {
     if (pathData.strokeColor && pathData.strokeColor !== "transparent") {
       ctx.strokeStyle = pathData.strokeColor;
       ctx.lineWidth = pathData.lineWidth || 1;
+
+      // 设置线条连接样式
+      if (pathData.lineJoin) {
+        ctx.lineJoin = pathData.lineJoin;
+      } else {
+        ctx.lineJoin = "miter"; // 默认值
+      }
+
+      // 设置线条端点样式
+      if (pathData.lineCap) {
+        ctx.lineCap = pathData.lineCap;
+      } else {
+        ctx.lineCap = "butt"; // 默认值
+      }
+
+      // 如果是 miter 连接，设置 miterLimit 以避免尖角过长
+      if (ctx.lineJoin === "miter") {
+        ctx.miterLimit = 10; // 默认值
+      }
+
       ctx.stroke();
     }
 

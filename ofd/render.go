@@ -45,6 +45,8 @@ type PathData struct {
 	FillColor   string           `json:"fillColor,omitempty"`
 	StrokeColor string           `json:"strokeColor,omitempty"`
 	LineWidth   float64          `json:"lineWidth"`
+	LineJoin    string           `json:"lineJoin,omitempty"`    // miter, round, bevel
+	LineCap     string           `json:"lineCap,omitempty"`     // butt, round, square
 	X           float64          `json:"x"`
 	Y           float64          `json:"y"`
 	Gradient    *GradientData    `json:"gradient,omitempty"`
@@ -1186,12 +1188,39 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 		}
 	}
 
+	// 转换 OFD 的 Join 和 Cap 值到 Canvas 格式
+	lineJoin := "miter" // 默认值
+	if pathObj.Join != "" {
+		switch strings.ToLower(pathObj.Join) {
+		case "round":
+			lineJoin = "round"
+		case "bevel":
+			lineJoin = "bevel"
+		case "miter":
+			lineJoin = "miter"
+		}
+	}
+	
+	lineCap := "butt" // 默认值
+	if pathObj.Cap != "" {
+		switch strings.ToLower(pathObj.Cap) {
+		case "round":
+			lineCap = "round"
+		case "square":
+			lineCap = "square"
+		case "butt":
+			lineCap = "butt"
+		}
+	}
+
 	// 转换路径命令：应用 CTM 缩放和 Boundary 平移
 	result.CanvasData.Paths = append(result.CanvasData.Paths, PathData{
 		Commands:    convertOFDPathToCanvasWithCTM(pathObj.AbbreviatedData, scale, bx, by, ctm),
 		FillColor:   fillColor,
 		StrokeColor: strokeColor,
 		LineWidth:   lineWidth * scale,
+		LineJoin:    lineJoin,
+		LineCap:     lineCap,
 		Gradient:    gradient,
 		X:           0,
 		Y:           0,
@@ -1527,108 +1556,131 @@ func parseDeltas(deltaStr string) []float64 {
 // convertOFDPathToCanvasWithCTM 转换OFD路径命令为Canvas命令JSON，应用CTM变换
 func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY float64, ctm []float64) string {
 	var commands []map[string]interface{}
-	
-	// CTM 变换函数：将对象坐标系的点变换到页面坐标系
-	// CTM 格式: [a, b, c, d, e, f]
-	// 变换公式: x' = a*x + c*y + e, y' = b*x + d*y + f
+
+	// CTM 变换逻辑 (保持不变)
 	transformPoint := func(x, y float64) (float64, float64) {
 		if len(ctm) >= 6 {
-			// 先应用 CTM 变换（缩放和旋转）
 			tx := ctm[0]*x + ctm[2]*y + ctm[4]
 			ty := ctm[1]*x + ctm[3]*y + ctm[5]
-			// 再加上 Boundary 偏移
 			tx += offsetX
 			ty += offsetY
-			// 最后转换为像素
 			return tx * scale, ty * scale
 		}
-		// 没有 CTM，直接加上 Boundary 偏移并转换为像素
 		return (offsetX + x) * scale, (offsetY + y) * scale
 	}
-	
-	// 简化解析：按空格分割
-	parts := strings.Fields(data)
+
+	// 1. 使用正则提取所有 Token (指令字母 或 浮点数)
+	// 这个正则解决了 "粘连" 问题 (如 100-20 或 L100)
+	// 匹配：单个字母 [a-zA-Z]  OR  数字 (支持负号、小数) [-+]?[0-9]*\.?[0-9]+
+	re := regexp.MustCompile(`([a-zA-Z])|([-+]?[0-9]*\.?[0-9]+)`)
+	matches := re.FindAllString(data, -1)
+
 	i := 0
-	
-	for i < len(parts) {
-		cmd := parts[i]
-		switch cmd {
-		case "S", "M": // Start/Move
-			if i+2 < len(parts) {
-				x, _ := strconv.ParseFloat(parts[i+1], 64)
-				y, _ := strconv.ParseFloat(parts[i+2], 64)
+	length := len(matches)
+	var currentCmd string // 记录当前命令，处理隐含重复
+
+	for i < length {
+		token := matches[i]
+
+		// 判断是否是命令字母
+		firstChar := token[0]
+		if (firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z') {
+			currentCmd = token
+			i++
+		}
+		// 如果不是字母，则沿用上一个 currentCmd (隐含命令逻辑)
+
+		switch currentCmd {
+		case "S", "M": // MoveTo
+			if i+1 < length {
+				x, _ := strconv.ParseFloat(matches[i], 64)
+				y, _ := strconv.ParseFloat(matches[i+1], 64)
 				tx, ty := transformPoint(x, y)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "M", "x": tx, "y": ty,
 				})
-				i += 3
+				i += 2
+				// M 后面的数字如果还有，通常视为 L (LineTo)
+				currentCmd = "L" 
 			} else {
 				i++
 			}
-		case "L": // Line
-			if i+2 < len(parts) {
-				x, _ := strconv.ParseFloat(parts[i+1], 64)
-				y, _ := strconv.ParseFloat(parts[i+2], 64)
+		case "L": // LineTo
+			if i+1 < length {
+				x, _ := strconv.ParseFloat(matches[i], 64)
+				y, _ := strconv.ParseFloat(matches[i+1], 64)
 				tx, ty := transformPoint(x, y)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "L", "x": tx, "y": ty,
 				})
-				i += 3
+				i += 2
 			} else {
 				i++
 			}
-		case "B", "C": // Bezier curve
-			if i+6 < len(parts) {
-				x1, _ := strconv.ParseFloat(parts[i+1], 64)
-				y1, _ := strconv.ParseFloat(parts[i+2], 64)
-				x2, _ := strconv.ParseFloat(parts[i+3], 64)
-				y2, _ := strconv.ParseFloat(parts[i+4], 64)
-				x3, _ := strconv.ParseFloat(parts[i+5], 64)
-				y3, _ := strconv.ParseFloat(parts[i+6], 64)
+		case "B": // Bezier (OFD 的 B 是贝塞尔)
+			if i+5 < length {
+				x1, _ := strconv.ParseFloat(matches[i], 64)
+				y1, _ := strconv.ParseFloat(matches[i+1], 64)
+				x2, _ := strconv.ParseFloat(matches[i+2], 64)
+				y2, _ := strconv.ParseFloat(matches[i+3], 64)
+				x3, _ := strconv.ParseFloat(matches[i+4], 64)
+				y3, _ := strconv.ParseFloat(matches[i+5], 64)
+				
 				tx1, ty1 := transformPoint(x1, y1)
 				tx2, ty2 := transformPoint(x2, y2)
 				tx3, ty3 := transformPoint(x3, y3)
+				
+				// 对应 Canvas 的 bezierCurveTo (cmd: C)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "C",
 					"x1": tx1, "y1": ty1,
 					"x2": tx2, "y2": ty2,
 					"x":  tx3, "y":  ty3,
 				})
-				i += 7
+				i += 6
 			} else {
 				i++
 			}
-		case "Q": // Quadratic curve
-			if i+4 < len(parts) {
-				x1, _ := strconv.ParseFloat(parts[i+1], 64)
-				y1, _ := strconv.ParseFloat(parts[i+2], 64)
-				x2, _ := strconv.ParseFloat(parts[i+3], 64)
-				y2, _ := strconv.ParseFloat(parts[i+4], 64)
+		case "Q": // Quadratic
+			if i+3 < length {
+				x1, _ := strconv.ParseFloat(matches[i], 64)
+				y1, _ := strconv.ParseFloat(matches[i+1], 64)
+				x2, _ := strconv.ParseFloat(matches[i+2], 64)
+				y2, _ := strconv.ParseFloat(matches[i+3], 64)
+				
 				tx1, ty1 := transformPoint(x1, y1)
 				tx2, ty2 := transformPoint(x2, y2)
+				
 				commands = append(commands, map[string]interface{}{
 					"cmd": "Q",
 					"x1": tx1, "y1": ty1,
 					"x":  tx2, "y":  ty2,
 				})
-				i += 5
+				i += 4
 			} else {
 				i++
 			}
-		case "A": // Arc - 简化处理
-			i += 6
-		case "Z": // Close
+		case "C": // Close (OFD 的 C 是闭合)
+			// 修正：OFD 的 C 不需要参数，直接映射为 Canvas 的 Z
 			commands = append(commands, map[string]interface{}{"cmd": "Z"})
-			i++
+			// Close 指令后面通常不再跟坐标，直到新的 M 出现
+			// 即使 i 不增加也没关系，下一次循环会读到新的指令
+		case "A": // Arc
+		    // Arc 参数较多，暂时跳过参数防止解析错位
+		    // 严谨做法需要消耗掉 A 的参数 (rx ry rot large sweep x y) 共7个
+			if i+6 < length {
+			    i += 7
+			} else {
+			    i++
+			}
 		default:
 			i++
 		}
 	}
-	
+
 	jsonData, _ := json.Marshal(commands)
 	return string(jsonData)
 }
-
 // convertOFDPathToCanvas 转换OFD路径命令为Canvas命令JSON（向后兼容）
 func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64) string {
 	return convertOFDPathToCanvasWithCTM(data, scale, offsetX, offsetY, nil)
