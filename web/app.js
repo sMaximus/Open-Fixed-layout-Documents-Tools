@@ -327,24 +327,30 @@ function drawText(ctx, item) {
 
   let fontFamily = item.fontFamily;
   ctx.font = `${item.fontSize}px ${fontFamily}`;
-  // ctx.textBaseline = "alphabetic";
+  ctx.textBaseline = "top";
 
-  ctx.textBaseline = "alphabetic";
-  const ascentRatio = 0.88; // 与 HTML 保持完全一致的魔法数值
-  const correctedY = item.y - item.fontSize * ascentRatio;
+  // OFD 坐标系统：
+  // - item.boundaryY 是 Boundary 的顶部位置
+  // - item.textCodeY 是相对于 Boundary 顶部的基线偏移
+  // 不同字体的 textCodeY 不同，这是为了让不同字体对齐
+  // 我们应该使用 boundaryY 作为统一的顶部参考点
+
+  let topY;
+  if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
+    // 使用 Boundary Y 作为顶部参考点
+    topY = item.boundaryY;
+  } else {
+    // 兼容旧版本：使用固定比例
+    const baselineOffset = item.fontSize * 0.8;
+    topY = item.y - baselineOffset;
+  }
 
   // 应用 CTM 变换矩阵
   if (item.ctm && item.ctm.length >= 4) {
-    const a = item.ctm[0];
-    const b = item.ctm[1];
-    const c = item.ctm[2];
-    const d = item.ctm[3];
-    const e = item.ctm.length > 4 ? item.ctm[4] : 0;
-    const f = item.ctm.length > 5 ? item.ctm[5] : 0;
-
+    const [a, b, c, d, e, f] = item.ctm;
     // 先平移到文字位置，再应用 CTM 变换
-    ctx.translate(item.x, correctedY);
-    ctx.transform(a, b, c, d, e, f);
+    ctx.translate(item.x, topY);
+    ctx.transform(a, b, c, d, e || 0, f || 0);
 
     // 处理填充 - 后端已经计算好 fill 值
     if (item.fill) {
@@ -362,17 +368,17 @@ function drawText(ctx, item) {
     // 没有 CTM，直接绘制
     if (item.fill) {
       ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, item.x, correctedY);
+      ctx.fillText(item.text, item.x, topY);
     }
     if (item.stroke && item.strokeColor) {
       ctx.strokeStyle = item.strokeColor;
       ctx.lineWidth = item.lineWidth || 1;
-      ctx.strokeText(item.text, item.x, correctedY);
+      ctx.strokeText(item.text, item.x, topY);
     }
     // 如果既没有 fill 也没有 stroke，默认填充
     if (!item.fill && !item.stroke) {
       ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, item.x, correctedY);
+      ctx.fillText(item.text, item.x, topY);
     }
   }
 
@@ -511,11 +517,12 @@ function drawPath(ctx, pathData) {
 // ============ 上层透明文本层 ============
 // 关键：color: transparent，位置与 Canvas 文字完全重合
 
+// 创建一个隐藏的 canvas 用于测量文字
+const measureCanvas = document.createElement("canvas");
+const measureCtx = measureCanvas.getContext("2d");
+
 function renderTransparentTextLayer(container, textItems) {
   if (!textItems || textItems.length === 0) return;
-
-  // Ascent 比例：基线到顶部的距离约占字号的 88%
-  const ascentRatio = 0.88;
 
   for (const item of textItems) {
     // 检查是否是占位标记
@@ -545,19 +552,19 @@ function renderTransparentTextLayer(container, textItems) {
     // 计算 CTM 变换
     let transform = "";
     if (item.ctm && item.ctm.length >= 4) {
-      const a = item.ctm[0];
-      const b = item.ctm[1];
-      const c = item.ctm[2];
-      const d = item.ctm[3];
-      const e = item.ctm[4] || 0;
-      const f = item.ctm[5] || 0;
-      // CSS transform matrix(a, b, c, d, e, f)
-      transform = `transform: matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f}); transform-origin: left top;`;
+      const [a, b, c, d, e, f] = item.ctm;
+      transform = `transform: matrix(${a}, ${b}, ${c}, ${d}, ${e || 0}, ${f || 0}); transform-origin: left top;`;
     }
 
-    // OFD 的 Y 坐标是基线位置，HTML 的 top 是元素顶部
-    // 需要减去 Ascent（基线到顶部的距离）
-    const topPos = item.y - item.fontSize * ascentRatio;
+    // OFD 坐标系统：使用 Boundary Y 作为统一的顶部参考点
+    let topPos;
+    if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
+      topPos = item.boundaryY;
+    } else {
+      // 兼容旧版本
+      const baselineOffset = item.fontSize * 0.8;
+      topPos = item.y - baselineOffset;
+    }
 
     // 关键样式：
     // - color: transparent 让文字透明（用户看不见）

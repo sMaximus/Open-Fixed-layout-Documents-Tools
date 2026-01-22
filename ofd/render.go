@@ -81,20 +81,22 @@ type ImageData struct {
 
 // TextItem 文本项
 type TextItem struct {
-	Text        string    `json:"text"`
-	X           float64   `json:"x"`
-	Y           float64   `json:"y"`
-	Width       float64   `json:"width,omitempty"`       // 宽度（用于占位框）
-	Height      float64   `json:"height,omitempty"`      // 高度（用于占位框）
-	FontSize    float64   `json:"fontSize"`
-	FontFamily  string    `json:"fontFamily"`
-	FontID      string    `json:"fontID"`
-	Color       string    `json:"color"`
-	CTM         []float64 `json:"ctm,omitempty"`         // 变换矩阵 [a, b, c, d, e, f]
-	Stroke      bool      `json:"stroke"`                // 是否描边
-	StrokeColor string    `json:"strokeColor,omitempty"` // 描边颜色
-	LineWidth   float64   `json:"lineWidth,omitempty"`   // 描边线宽
-	Fill        bool      `json:"fill"`                  // 是否填充
+	Text         string    `json:"text"`
+	X            float64   `json:"x"`
+	Y            float64   `json:"y"`
+	Width        float64   `json:"width,omitempty"`        // 宽度（用于占位框）
+	Height       float64   `json:"height,omitempty"`       // 高度（用于占位框）
+	BoundaryY    float64   `json:"boundaryY,omitempty"`    // Boundary 的 Y 坐标
+	TextCodeY    float64   `json:"textCodeY,omitempty"`    // TextCode 的 Y 坐标（相对于 Boundary）
+	FontSize     float64   `json:"fontSize"`
+	FontFamily   string    `json:"fontFamily"`
+	FontID       string    `json:"fontID"`
+	Color        string    `json:"color"`
+	CTM          []float64 `json:"ctm,omitempty"`          // 变换矩阵 [a, b, c, d, e, f]
+	Stroke       bool      `json:"stroke"`                 // 是否描边
+	StrokeColor  string    `json:"strokeColor,omitempty"`  // 描边颜色
+	LineWidth    float64   `json:"lineWidth,omitempty"`    // 描边线宽
+	Fill         bool      `json:"fill"`                   // 是否填充
 }
 
 // FontInfo 字体信息
@@ -1306,7 +1308,7 @@ func (p *Parser) parseRadialShd(shd *RadialShd, ctm []float64, scale float64) *G
 // extractText 提取文本数据
 func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale float64, debug *DebugInfo) {
 	bx, by, _, _ := parseBoundary(text.Boundary)
-
+	
 	fontID := text.Font
 	fontFamily := "SimSun, serif"
 	if font, ok := p.fonts[text.Font]; ok {
@@ -1442,6 +1444,8 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 					Text:        string(char),
 					X:           currentX,
 					Y:           tcY,
+					BoundaryY:   by * scale,    // Boundary 的 Y 坐标（像素）
+					TextCodeY:   tc.Y * scale,  // TextCode 的 Y 坐标（像素）
 					FontSize:    fontSize,
 					FontFamily:  fontFamily,
 					FontID:      fontID,
