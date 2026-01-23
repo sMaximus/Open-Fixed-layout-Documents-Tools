@@ -50,6 +50,19 @@ type PathData struct {
 	X           float64          `json:"x"`
 	Y           float64          `json:"y"`
 	Gradient    *GradientData    `json:"gradient,omitempty"`
+	Pattern     *PatternData     `json:"pattern,omitempty"`
+}
+
+// PatternData Pattern 填充数据
+type PatternData struct {
+	Width      float64     `json:"width"`      // 单元格内容宽度 (mm)
+	Height     float64     `json:"height"`     // 单元格内容高度 (mm)
+	XStep      float64     `json:"xStep"`      // X 方向步长 (mm)
+	YStep      float64     `json:"yStep"`      // Y 方向步长 (mm)
+	RelativeTo string      `json:"relativeTo"` // "Page" 或 "Object"
+	CTM        []float64   `json:"ctm,omitempty"` // Pattern 的 CTM 变换 [a, b, c, d, e, f]
+	CellImages []ImageData `json:"cellImages"` // 单元格中的图片
+	CellPaths  []PathData  `json:"cellPaths"`  // 单元格中的路径
 }
 
 // GradientData 渐变数据
@@ -1111,6 +1124,7 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 	strokeColor := ""
 	fillColor := ""
 	var gradient *GradientData
+	var pattern *PatternData
 	
 	// 处理描边颜色
 	if pathObj.StrokeColor != nil && pathObj.StrokeColor.Value != "" {
@@ -1126,7 +1140,7 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 		ctm = parseCTM(pathObj.CTM)
 	}
 	
-	// 处理填充颜色或渐变
+	// 处理填充颜色、渐变或图案
 	if pathObj.FillColor != nil {
 		if pathObj.FillColor.Value != "" {
 			// 纯色填充
@@ -1137,6 +1151,9 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 		} else if pathObj.FillColor.RadialShd != nil {
 			// 径向渐变
 			gradient = p.parseRadialShd(pathObj.FillColor.RadialShd, ctm, scale)
+		} else if pathObj.FillColor.Pattern != nil {
+			// Pattern 图案填充
+			pattern = p.parsePattern(pathObj.FillColor.Pattern, scale)
 		}
 	}
 
@@ -1222,6 +1239,7 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 		LineJoin:    lineJoin,
 		LineCap:     lineCap,
 		Gradient:    gradient,
+		Pattern:     pattern,
 		X:           0,
 		Y:           0,
 	})
@@ -1331,6 +1349,136 @@ func (p *Parser) parseRadialShd(shd *RadialShd, ctm []float64, scale float64) *G
 		R1:    shd.EndRadius,
 		Stops: stops,
 	}
+}
+
+// parsePattern 解析 Pattern 图案填充
+// 
+// Pattern 元素示例：
+// <ofd:Pattern Width="467" Height="155" XStep="1920" YStep="1080" RelativeTo="Page" 
+//              CTM="0.2393 0 0 0.2393 165.7258 -152.0952">
+//   <ofd:CellContent>
+//     <ofd:ImageObject ID="5" CTM="467 0 0 155 0 0" Boundary="0 0 467 155" ResourceID="4"/>
+//   </ofd:CellContent>
+// </ofd:Pattern>
+//
+// 关键参数：
+// - Width, Height: 单元格内容尺寸 (mm)
+// - XStep, YStep: 平铺步长 (mm)，应用 CTM 缩放后得到实际步长
+// - CTM: [a, b, c, d, e, f]
+//   - a, d: 缩放因子（如 0.2393）
+//   - e, f: 起始偏移（mm），f 可能为负数表示第一个 tile 在页面外
+//
+// 平铺计算示例（页面高 190.5mm）：
+// - 起始 Y = f = -152.1mm（页面外）
+// - 步长 = YStep * d = 1080 * 0.2393 = 258.44mm
+// - Tile 0: Y = -152.1mm（不可见）
+// - Tile 1: Y = -152.1 + 258.44 = 106.34mm（可见，在页面中下部）
+func (p *Parser) parsePattern(pattern *Pattern, scale float64) *PatternData {
+	if pattern == nil {
+		return nil
+	}
+
+	patternData := &PatternData{
+		Width:      pattern.Width,
+		Height:     pattern.Height,
+		XStep:      pattern.XStep,
+		YStep:      pattern.YStep,
+		RelativeTo: pattern.RelativeTo,
+		CellImages: make([]ImageData, 0),
+		CellPaths:  make([]PathData, 0),
+	}
+
+	// 如果没有指定 RelativeTo，默认为 Page
+	if patternData.RelativeTo == "" {
+		patternData.RelativeTo = "Page"
+	}
+
+	// 解析 Pattern 的 CTM
+	// CTM 格式: "a b c d e f"
+	// - a, d: 缩放因子
+	// - e, f: 起始偏移（mm）
+	if pattern.CTM != "" {
+		patternData.CTM = parseCTM(pattern.CTM)
+	}
+
+	// 处理 CellContent 中的图片
+	for _, img := range pattern.CellContent.ImageObjects {
+		imgBytes, ok := p.images[img.ResourceID]
+		if !ok {
+			continue
+		}
+
+		// 解析图片的 Boundary
+		imgX, imgY, imgW, imgH := parseBoundary(img.Boundary)
+
+		// 如果有 CTM，使用 CTM 中的尺寸
+		// ImageObject 的 CTM 格式: "w 0 0 h 0 0" 表示宽高
+		if img.CTM != "" {
+			imgCTM := parseCTM(img.CTM)
+			if len(imgCTM) >= 4 {
+				imgW = imgCTM[0]
+				imgH = imgCTM[3]
+			}
+		}
+
+		// 检测图片类型
+		mimeType := "image/png"
+		if len(imgBytes) > 2 && imgBytes[0] == 0xFF && imgBytes[1] == 0xD8 {
+			mimeType = "image/jpeg"
+		}
+
+		// 添加图片到 Pattern（坐标保持 mm 单位，前端会处理缩放）
+		patternData.CellImages = append(patternData.CellImages, ImageData{
+			DataURL: fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgBytes)),
+			X:       imgX,
+			Y:       imgY,
+			Width:   imgW,
+			Height:  imgH,
+		})
+	}
+
+	// 处理 CellContent 中的路径
+	for _, pathObj := range pattern.CellContent.PathObjects {
+		if pathObj.AbbreviatedData == "" {
+			continue
+		}
+
+		// 解析路径的填充和描边
+		fillColor := ""
+		strokeColor := ""
+
+		if pathObj.FillColor != nil && pathObj.FillColor.Value != "" {
+			fillColor = parseColor(pathObj.FillColor.Value)
+		}
+
+		if pathObj.StrokeColor != nil && pathObj.StrokeColor.Value != "" {
+			strokeColor = parseColor(pathObj.StrokeColor.Value)
+		}
+
+		// 解析边界
+		bx, by, _, _ := parseBoundary(pathObj.Boundary)
+
+		// 解析 CTM
+		var ctm []float64
+		if pathObj.CTM != "" {
+			ctm = parseCTM(pathObj.CTM)
+		}
+
+		lineWidth := pathObj.LineWidth
+		if lineWidth == 0 {
+			lineWidth = 0.353
+		}
+
+		// 添加路径到 Pattern（坐标保持 mm 单位，不乘以 scale）
+		patternData.CellPaths = append(patternData.CellPaths, PathData{
+			Commands:    convertOFDPathToCanvasWithCTM(pathObj.AbbreviatedData, 1.0, bx, by, ctm),
+			FillColor:   fillColor,
+			StrokeColor: strokeColor,
+			LineWidth:   lineWidth,
+		})
+	}
+
+	return patternData
 }
 
 

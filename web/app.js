@@ -295,10 +295,10 @@ async function renderCanvasLayer(canvas, canvasData, textLayer) {
 
   if (!canvasData) canvasData = {};
 
-  // 2. 渲染路径（矢量图形、线条）
+  // 2. 渲染路径（矢量图形、线条）- 需要 await 因为 Pattern 是异步的
   if (canvasData.paths) {
     for (const pathData of canvasData.paths) {
-      drawPath(ctx, pathData);
+      await drawPath(ctx, pathData);
     }
   }
 
@@ -422,8 +422,268 @@ function drawImage(ctx, imgData) {
   });
 }
 
-// Canvas 绘制路径
-function drawPath(ctx, pathData) {
+/**
+ * 创建 Pattern 填充（异步版本）
+ *
+ * Pattern 元素示例：
+ * <ofd:Pattern Width="467" Height="155" XStep="1920" YStep="1080" RelativeTo="Page"
+ *              CTM="0.2393 0 0 0.2393 165.7258 -152.0952">
+ *
+ * 关键参数：
+ * - Width, Height: 单元格内容尺寸 (mm)
+ * - XStep, YStep: 平铺步长 (mm)
+ * - CTM: [a, b, c, d, e, f]
+ *   - a, d: 缩放因子（如 0.2393）
+ *   - e, f: 起始偏移（mm），f 可能为负数表示第一个 tile 在页面外
+ *
+ * 平铺计算示例（页面高 190.5mm）：
+ * - 起始 Y = f = -152.1mm（页面外）
+ * - 步长 = YStep * d = 1080 * 0.2393 = 258.44mm
+ * - Tile 0: Y = -152.1mm（不可见）
+ * - Tile 1: Y = -152.1 + 258.44 = 106.34mm（可见，在页面中下部）
+ *
+ * @param {CanvasRenderingContext2D} ctx - 主画布上下文
+ * @param {Object} patternData - Pattern 数据
+ * @returns {Promise<CanvasPattern|null>} Canvas 图案对象
+ */
+async function createPatternFill(ctx, patternData) {
+  console.log("=== createPatternFill 开始 ===");
+  console.log("Pattern Data:", patternData);
+
+  if (!patternData || patternData.xStep <= 0 || patternData.yStep <= 0) {
+    console.warn("Pattern 数据无效:", patternData);
+    return null;
+  }
+
+  const mmToPx = 3.78; // mm to px
+
+  // 获取 CTM 参数
+  // CTM = [a, b, c, d, e, f] 其中：
+  // - a, d 是缩放因子（如 0.2393）
+  // - e, f 是起始偏移（mm）
+  let ctmScaleX = 1,
+    ctmScaleY = 1;
+  let ctmE_mm = 0,
+    ctmF_mm = 0;
+  if (patternData.ctm && patternData.ctm.length >= 4) {
+    ctmScaleX = patternData.ctm[0];
+    ctmScaleY = patternData.ctm[3];
+    if (patternData.ctm.length >= 6) {
+      ctmE_mm = patternData.ctm[4];
+      ctmF_mm = patternData.ctm[5];
+    }
+  }
+
+  // 将 CTM 平移转换为像素
+  const ctmE_px = ctmE_mm * mmToPx;
+  const ctmF_px = ctmF_mm * mmToPx;
+
+  // 计算应用 CTM 缩放后的实际重复单元尺寸
+  // XStep/YStep 是 mm，需要先转像素再乘缩放
+  // 例如：YStep=1080mm * 3.78 * 0.2393 ≈ 976px
+  const patternWidth = Math.ceil(patternData.xStep * mmToPx * ctmScaleX);
+  const patternHeight = Math.ceil(patternData.yStep * mmToPx * ctmScaleY);
+
+  console.log(
+    `Pattern 分析:\n` +
+      `  - XStep=${patternData.xStep}mm, YStep=${patternData.yStep}mm\n` +
+      `  - CTM scale=(${ctmScaleX}, ${ctmScaleY})\n` +
+      `  - CTM offset=(${ctmE_mm}mm, ${ctmF_mm}mm) = (${ctmE_px.toFixed(2)}px, ${ctmF_px.toFixed(2)}px)\n` +
+      `  - 烘焙后单元尺寸=(${patternWidth}px, ${patternHeight}px)\n` +
+      `  - 平铺计算:\n` +
+      `    * Tile 0: Y = ${ctmF_mm.toFixed(2)}mm = ${ctmF_px.toFixed(2)}px (${ctmF_mm < 0 ? "页面外" : "页面内"})\n` +
+      `    * Tile 1: Y = ${ctmF_mm.toFixed(2)} + ${(patternData.yStep * ctmScaleY).toFixed(2)} = ${(ctmF_mm + patternData.yStep * ctmScaleY).toFixed(2)}mm = ${(ctmF_px + patternHeight).toFixed(2)}px`,
+  );
+
+  // 1. 创建离屏 Canvas，尺寸为应用 CTM 后的实际尺寸
+  const offscreenCanvas = document.createElement("canvas");
+  offscreenCanvas.width = patternWidth;
+  offscreenCanvas.height = patternHeight;
+  const offCtx = offscreenCanvas.getContext("2d");
+
+  // 清空画布
+  offCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+
+  // 2. 渲染 CellContent，应用 CTM 缩放
+  // 图片坐标需要乘以 mmToPx * ctmScale
+  const combinedScaleX = mmToPx * ctmScaleX;
+  const combinedScaleY = mmToPx * ctmScaleY;
+
+  // 渲染路径（同步）
+  if (patternData.cellPaths && patternData.cellPaths.length > 0) {
+    for (const cellPath of patternData.cellPaths) {
+      drawCellPathWithScale(offCtx, cellPath, combinedScaleX, combinedScaleY);
+    }
+  }
+
+  // 渲染图片（异步，等待所有图片加载完成）
+  if (patternData.cellImages && patternData.cellImages.length > 0) {
+    const imagePromises = patternData.cellImages.map((cellImg) =>
+      drawCellImageAsync(offCtx, cellImg, combinedScaleX, combinedScaleY),
+    );
+    await Promise.all(imagePromises);
+    console.log("Pattern: 所有图片加载完成");
+  }
+
+  // 3. 创建 CanvasPattern
+  const pattern = ctx.createPattern(offscreenCanvas, "repeat");
+  if (!pattern) {
+    return null;
+  }
+
+  // 调试：将离屏 Canvas 添加到页面上查看
+  if (window.DEBUG_PATTERN) {
+    const debugDiv = document.createElement("div");
+    debugDiv.style.cssText = `
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      z-index: 9999;
+      background: white;
+      border: 2px solid red;
+      padding: 10px;
+    `;
+    debugDiv.innerHTML = `<div>Pattern Debug (${patternWidth}×${patternHeight})</div>`;
+    offscreenCanvas.style.border = "1px solid black";
+    offscreenCanvas.style.maxWidth = "300px";
+    offscreenCanvas.style.maxHeight = "300px";
+    debugDiv.appendChild(offscreenCanvas.cloneNode(true));
+    document.body.appendChild(debugDiv);
+  }
+
+  // 4. 处理 RelativeTo 坐标对齐和负偏移
+  // Canvas Pattern 的 repeat 会自动平铺
+  // setTransform 设置第一个 tile 的起始位置
+  // 如果 f 为负数，第一个 tile 在页面外，第二个 tile 会自动出现在正确位置
+  const matrix = new DOMMatrix();
+
+  if (patternData.relativeTo === "Page") {
+    // Pattern 相对于页面原点 (0,0) 对齐
+    // CTM 的 e, f 定义了 Pattern 的起始位置（像素）
+    matrix.translateSelf(ctmE_px, ctmF_px);
+    console.log(
+      `Pattern RelativeTo=Page:\n` +
+        `  - 起始位置: (${ctmE_px.toFixed(2)}px, ${ctmF_px.toFixed(2)}px)\n` +
+        `  - 第 2 行位置: Y = ${ctmF_px.toFixed(2)} + ${patternHeight} = ${(ctmF_px + patternHeight).toFixed(2)}px`,
+    );
+  } else {
+    // RelativeTo="Object" (默认)
+    // Pattern 相对于对象边界框左上角对齐
+    matrix.translateSelf(ctmE_px, ctmF_px);
+    console.log(
+      `Pattern RelativeTo=Object:\n` +
+        `  - 总平移: (${ctmE_px.toFixed(2)}px, ${ctmF_px.toFixed(2)}px)`,
+    );
+  }
+
+  pattern.setTransform(matrix);
+  return pattern;
+}
+
+/**
+ * 在离屏 Canvas 上绘制单元格路径（带独立 X/Y 缩放）
+ */
+function drawCellPathWithScale(ctx, pathData, scaleX, scaleY) {
+  try {
+    const commands = JSON.parse(pathData.commands);
+    if (!commands || commands.length === 0) return;
+
+    ctx.save();
+    ctx.beginPath();
+
+    for (const cmd of commands) {
+      switch (cmd.cmd) {
+        case "M":
+          ctx.moveTo(cmd.x * scaleX, cmd.y * scaleY);
+          break;
+        case "L":
+          ctx.lineTo(cmd.x * scaleX, cmd.y * scaleY);
+          break;
+        case "C":
+          ctx.bezierCurveTo(
+            cmd.x1 * scaleX,
+            cmd.y1 * scaleY,
+            cmd.x2 * scaleX,
+            cmd.y2 * scaleY,
+            cmd.x * scaleX,
+            cmd.y * scaleY,
+          );
+          break;
+        case "Q":
+          ctx.quadraticCurveTo(
+            cmd.x1 * scaleX,
+            cmd.y1 * scaleY,
+            cmd.x * scaleX,
+            cmd.y * scaleY,
+          );
+          break;
+        case "Z":
+          ctx.closePath();
+          break;
+      }
+    }
+
+    if (pathData.fillColor && pathData.fillColor !== "transparent") {
+      ctx.fillStyle = pathData.fillColor;
+      ctx.fill();
+    }
+
+    if (pathData.strokeColor && pathData.strokeColor !== "transparent") {
+      ctx.strokeStyle = pathData.strokeColor;
+      ctx.lineWidth = (pathData.lineWidth || 1) * Math.min(scaleX, scaleY);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  } catch (e) {
+    console.warn("Pattern path render error:", e);
+  }
+}
+
+/**
+ * 异步绘制单元格图片（带独立 X/Y 缩放）
+ * @returns {Promise<void>}
+ */
+function drawCellImageAsync(ctx, imgData, scaleX, scaleY) {
+  return new Promise((resolve) => {
+    if (!imgData.dataURL) {
+      console.warn("CellImage: 没有 dataURL");
+      resolve();
+      return;
+    }
+
+    const img = new Image();
+
+    img.onload = () => {
+      ctx.save();
+
+      // 坐标和尺寸应用各自的缩放因子
+      const x = imgData.x * scaleX;
+      const y = imgData.y * scaleY;
+      const w = imgData.width * scaleX;
+      const h = imgData.height * scaleY;
+
+      console.log(
+        `CellImage: 绘制图片 original=(${imgData.x}, ${imgData.y}, ${imgData.width}, ${imgData.height}), ` +
+          `scaled=(${x.toFixed(2)}, ${y.toFixed(2)}, ${w.toFixed(2)}, ${h.toFixed(2)})`,
+      );
+
+      ctx.drawImage(img, x, y, w, h);
+      ctx.restore();
+      resolve();
+    };
+
+    img.onerror = (err) => {
+      console.error("CellImage: 图片加载失败", err);
+      resolve();
+    };
+
+    img.src = imgData.dataURL;
+  });
+}
+
+// Canvas 绘制路径（异步版本，支持 Pattern）
+async function drawPath(ctx, pathData) {
   try {
     const commands = JSON.parse(pathData.commands);
     console.log("Path Commands:", commands.length, commands);
@@ -467,8 +727,15 @@ function drawPath(ctx, pathData) {
       }
     }
 
-    // 处理填充（纯色或渐变）
-    if (pathData.gradient) {
+    // 处理填充（Pattern、渐变或纯色）
+    if (pathData.pattern) {
+      // Pattern 图案填充（异步等待图片加载）
+      const pattern = await createPatternFill(ctx, pathData.pattern);
+      if (pattern) {
+        ctx.fillStyle = pattern;
+        ctx.fill();
+      }
+    } else if (pathData.gradient) {
       // 渐变填充
       let gradient;
       if (pathData.gradient.type === "linear") {

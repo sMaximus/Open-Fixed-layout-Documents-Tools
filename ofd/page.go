@@ -101,12 +101,31 @@ type Color struct {
 	ColorSpace string `xml:"ColorSpace,attr"`
 }
 
-// ColorOrShd 颜色或渐变
+// ColorOrShd 颜色或渐变或图案
 type ColorOrShd struct {
-	Value      string   `xml:"Value,attr"`
-	ColorSpace string   `xml:"ColorSpace,attr"`
-	AxialShd   *AxialShd `xml:"AxialShd"`
+	Value      string     `xml:"Value,attr"`
+	ColorSpace string     `xml:"ColorSpace,attr"`
+	AxialShd   *AxialShd  `xml:"AxialShd"`
 	RadialShd  *RadialShd `xml:"RadialShd"`
+	Pattern    *Pattern   `xml:"Pattern"`
+}
+
+// Pattern 图案填充
+type Pattern struct {
+	Width      float64     `xml:"Width,attr"`      // 单元格内容宽度 (mm)
+	Height     float64     `xml:"Height,attr"`     // 单元格内容高度 (mm)
+	XStep      float64     `xml:"XStep,attr"`      // 水平平铺步长 (mm)
+	YStep      float64     `xml:"YStep,attr"`      // 垂直平铺步长 (mm)
+	RelativeTo string      `xml:"RelativeTo,attr"` // "Page" 或 "Object"
+	CTM        string      `xml:"CTM,attr"`        // 变换矩阵
+	CellContent CellContent `xml:"CellContent"`    // 单元格内容
+}
+
+// CellContent Pattern 单元格内容
+type CellContent struct {
+	ImageObjects []ImageObject `xml:"ImageObject"`
+	PathObjects  []PathObject  `xml:"PathObject"`
+	TextObjects  []TextObject  `xml:"TextObject"`
 }
 
 // AxialShd 轴向渐变（线性渐变）
