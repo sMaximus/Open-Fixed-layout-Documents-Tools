@@ -200,17 +200,18 @@ func (p *Parser) getPageSize(page *Page) (float64, float64) {
 }
 
 func parseBox(box string) (float64, float64) {
-	parts := strings.Fields(box)
-	if len(parts) >= 4 {
-		w, _ := strconv.ParseFloat(parts[2], 64)
-		h, _ := strconv.ParseFloat(parts[3], 64)
-		return w, h
+	scanner := newNumberScanner(box)
+	scanner.nextFloat() // skip x
+	scanner.nextFloat() // skip y
+	w, _ := scanner.nextFloat()
+	h, _ := scanner.nextFloat()
+	if w == 0 && h == 0 {
+		return 210, 297
 	}
-	return 210, 297
+	return w, h
 }
 
-
-// loadResources 加载资源
+// loadResources 加载资源（优化版：只加载字体声明，不加载字体文件）
 func (p *Parser) loadResources() {
 	if p.fonts != nil {
 		return
@@ -228,145 +229,91 @@ func (p *Parser) loadResources() {
 		docBase = path.Dir(docRoot)
 	}
 
+	// 只扫描资源声明文件，不加载实际资源
 	for _, file := range p.files {
 		lower := strings.ToLower(file)
-		if strings.HasSuffix(lower, "publicres.xml") || strings.HasSuffix(lower, "documentres.xml") || (strings.Contains(lower, "res") && strings.HasSuffix(lower, ".xml")) {
-			data, err := p.readFile(file)
-			if err != nil {
-				continue
-			}
+		// 只处理资源声明文件
+		if !strings.HasSuffix(lower, "publicres.xml") && 
+		   !strings.HasSuffix(lower, "documentres.xml") &&
+		   !(strings.Contains(lower, "res") && strings.HasSuffix(lower, ".xml")) {
+			continue
+		}
+		
+		data, err := p.readFile(file)
+		if err != nil {
+			continue
+		}
 
-			// 移除命名空间前缀以便解析
-			xmlStr := removeNamespacePrefix(string(data))
+		xmlStr := removeNamespacePrefix(string(data))
+		var res Res
+		if err := xml.Unmarshal([]byte(xmlStr), &res); err != nil {
+			continue
+		}
 
-			var res Res
-			if err := xml.Unmarshal([]byte(xmlStr), &res); err != nil {
-				continue
-			}
+		basePath := path.Dir(file)
 
-			basePath := path.Dir(file)
-
-			// 加载字体
-			for _, font := range res.Fonts {
+		// 只记录字体声明，不加载字体文件
+		for _, font := range res.Fonts {
+			p.fonts[font.ID] = font
+			// 记录字体文件路径，但不立即加载
+			if font.FontFile != "" {
+				// 存储可能的路径供后续懒加载使用
+				font.FontFile = path.Join(basePath, res.BaseLoc, font.FontFile)
 				p.fonts[font.ID] = font
-
-				// 尝试加载字体文件
-				if font.FontFile != "" {
-					fontCandidates := []string{
-						path.Join(basePath, res.BaseLoc, font.FontFile),
-						path.Join(basePath, font.FontFile),
-						path.Join(docBase, res.BaseLoc, font.FontFile),
-						path.Join(docBase, font.FontFile),
-						font.FontFile,
-					}
-
-					for _, fontPath := range fontCandidates {
-						if fontData, err := p.readFile(fontPath); err == nil {
-							p.fontFiles[font.ID] = fontData
-							break
-						}
-					}
-				}
 			}
+		}
 
-			// 加载图片
-			for _, media := range res.MultiMedias {
-				if media.Type == "Image" {
-					candidates := []string{
-						path.Join(basePath, res.BaseLoc, media.MediaFile),
-						path.Join(basePath, media.MediaFile),
-						path.Join(docBase, res.BaseLoc, media.MediaFile),
-						path.Join(docBase, media.MediaFile),
-						media.MediaFile,
-					}
-
-					for _, imgPath := range candidates {
-						if imgData, err := p.readFile(imgPath); err == nil {
-							p.images[media.ID] = imgData
-							break
-						}
-					}
-				}
+		// 只记录图片声明，不加载图片数据
+		for _, media := range res.MultiMedias {
+			if media.Type == "Image" {
+				// 记录图片路径
+				imgPath := path.Join(basePath, res.BaseLoc, media.MediaFile)
+				// 存储路径而不是数据
+				p.images[media.ID] = []byte(imgPath)
 			}
 		}
 	}
 
-	// 直接扫描所有字体文件
-	for _, file := range p.files {
-		lower := strings.ToLower(file)
-		if strings.HasSuffix(lower, ".ttf") || strings.HasSuffix(lower, ".otf") || strings.HasSuffix(lower, ".ttc") || strings.HasSuffix(lower, ".woff") || strings.HasSuffix(lower, ".woff2") {
-			baseName := path.Base(file)
-			ext := path.Ext(baseName)
-			id := strings.TrimSuffix(baseName, ext)
-
-			if _, exists := p.fontFiles[id]; !exists {
-				if fontData, err := p.readFile(file); err == nil {
-					p.fontFiles[id] = fontData
-				}
-			}
-		}
-	}
-
-	// 直接扫描所有图片文件
-	for _, file := range p.files {
-		lower := strings.ToLower(file)
-		if strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".gif") || strings.HasSuffix(lower, ".jb2") || strings.HasSuffix(lower, ".ofd") {
-			baseName := path.Base(file)
-			ext := path.Ext(baseName)
-			id := strings.TrimSuffix(baseName, ext)
-
-			if _, exists := p.images[id]; !exists {
-				if imgData, err := p.readFile(file); err == nil {
-					p.images[id] = imgData
-				}
-			}
-		}
-	}
-
-	// 扫描注释目录下的资源文件
-	for _, file := range p.files {
-		lower := strings.ToLower(file)
-		// 查找 Annots 目录下的资源文件
-		if strings.Contains(lower, "annot") && strings.HasSuffix(lower, "res.xml") {
-			data, err := p.readFile(file)
-			if err != nil {
-				continue
-			}
-
-			xmlStr := removeNamespacePrefix(string(data))
-			var res Res
-			if err := xml.Unmarshal([]byte(xmlStr), &res); err != nil {
-				continue
-			}
-
-			basePath := path.Dir(file)
-
-			// 加载注释中的图片资源
-			for _, media := range res.MultiMedias {
-				if media.Type == "Image" {
-					candidates := []string{
-						path.Join(basePath, res.BaseLoc, media.MediaFile),
-						path.Join(basePath, media.MediaFile),
-						media.MediaFile,
-					}
-
-					for _, imgPath := range candidates {
-						if imgData, err := p.readFile(imgPath); err == nil {
-							p.images[media.ID] = imgData
-							break
-						}
-					}
-				}
-			}
-		}
-	}
+	_ = docBase // 保留变量避免编译警告
 }
 
-// GetFonts 获取所有字体信息
+// loadResourcesLazy 懒加载资源（按需加载图片）
+func (p *Parser) loadImageLazy(resourceID string) []byte {
+	// 如果已经是实际数据（长度大于路径长度），直接返回
+	if data, ok := p.images[resourceID]; ok {
+		if len(data) > 500 { // 实际图片数据肯定大于500字节
+			return data
+		}
+		// 否则是路径，尝试加载
+		imgPath := string(data)
+		if imgData, err := p.readFile(imgPath); err == nil {
+			p.images[resourceID] = imgData
+			return imgData
+		}
+	}
+	
+	// 尝试直接用 ID 作为文件名查找
+	for _, file := range p.files {
+		lower := strings.ToLower(file)
+		if strings.Contains(lower, strings.ToLower(resourceID)) {
+			if strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || 
+			   strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".gif") {
+				if imgData, err := p.readFile(file); err == nil {
+					p.images[resourceID] = imgData
+					return imgData
+				}
+			}
+		}
+	}
+	
+	return nil
+}
+
+// GetFonts 获取所有字体信息（优化版：不加载字体文件数据）
 func (p *Parser) GetFonts() []FontInfo {
 	p.loadResources()
 
-	fonts := make([]FontInfo, 0)
+	fonts := make([]FontInfo, 0, len(p.fonts))
 	for id, font := range p.fonts {
 		info := FontInfo{
 			ID:         id,
@@ -374,43 +321,29 @@ func (p *Parser) GetFonts() []FontInfo {
 			FamilyName: font.FamilyName,
 			HasFile:    false,
 		}
-
-		// 检查是否有字体文件 - 尝试多种 ID 匹配
-		var fontData []byte
-		var found bool
-
-		// 1. 直接用 ID 查找
-		if fontData, found = p.fontFiles[id]; !found {
-			// 2. 尝试用字体名查找
-			if fontData, found = p.fontFiles[font.FontName]; !found {
-				// 3. 遍历所有字体文件，查找包含字体名的
-				for fileID, data := range p.fontFiles {
-					if strings.Contains(strings.ToLower(fileID), strings.ToLower(font.FontName)) ||
-						strings.Contains(strings.ToLower(font.FontName), strings.ToLower(fileID)) {
-						fontData = data
-						found = true
-						break
+		
+		// 检查是否有嵌入的字体文件（在 OFD 包内）
+		if font.FontFile != "" {
+			// 尝试加载字体文件
+			if fontData, err := p.readFile(font.FontFile); err == nil && len(fontData) > 0 {
+				info.HasFile = true
+				// 检测字体类型
+				mimeType := "font/ttf"
+				if len(fontData) > 4 {
+					switch {
+					case fontData[0] == 0x00 && fontData[1] == 0x01:
+						mimeType = "font/ttf"
+					case fontData[0] == 0x4F && fontData[1] == 0x54:
+						mimeType = "font/otf"
+					case fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x46:
+						mimeType = "font/woff"
+					case fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x32:
+						mimeType = "font/woff2"
 					}
 				}
+				info.DataURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(fontData))
+				p.fontFiles[id] = fontData
 			}
-		}
-
-		if found && len(fontData) > 0 {
-			info.HasFile = true
-			// 检测字体类型
-			mimeType := "font/ttf"
-			if len(fontData) > 4 {
-				if fontData[0] == 0x00 && fontData[1] == 0x01 && fontData[2] == 0x00 && fontData[3] == 0x00 {
-					mimeType = "font/ttf"
-				} else if fontData[0] == 0x4F && fontData[1] == 0x54 && fontData[2] == 0x54 && fontData[3] == 0x4F {
-					mimeType = "font/otf"
-				} else if fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x46 {
-					mimeType = "font/woff"
-				} else if fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x32 {
-					mimeType = "font/woff2"
-				}
-			}
-			info.DataURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(fontData))
 		}
 
 		fonts = append(fonts, info)
@@ -1065,8 +998,9 @@ func (p *Parser) extractESLImage(data []byte) []byte {
 
 // extractImage 提取图片数据
 func (p *Parser) extractImage(result *PageRenderResult, img *ImageObject, scale float64) {
-	imgData, ok := p.images[img.ResourceID]
-	if !ok {
+	// 使用懒加载获取图片数据
+	imgData := p.loadImageLazy(img.ResourceID)
+	if imgData == nil || len(imgData) == 0 {
 		return
 	}
 
@@ -1403,8 +1337,9 @@ func (p *Parser) parsePattern(pattern *Pattern, scale float64) *PatternData {
 
 	// 处理 CellContent 中的图片
 	for _, img := range pattern.CellContent.ImageObjects {
-		imgBytes, ok := p.images[img.ResourceID]
-		if !ok {
+		// 使用懒加载获取图片数据
+		imgBytes := p.loadImageLazy(img.ResourceID)
+		if imgBytes == nil || len(imgBytes) == 0 {
 			continue
 		}
 
@@ -1654,58 +1589,278 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 	}
 }
 
-// parseCTM 解析 CTM 变换矩阵
+// parseCTM 解析 CTM 变换矩阵（Scanner 方式）
 // 格式: "a b c d e f" 或 "a b c d"
 func parseCTM(ctmStr string) []float64 {
-	parts := strings.Fields(ctmStr)
 	result := make([]float64, 0, 6)
-	for _, p := range parts {
-		v, err := strconv.ParseFloat(p, 64)
-		if err == nil {
-			result = append(result, v)
+	scanner := newNumberScanner(ctmStr)
+	for {
+		val, ok := scanner.nextFloat()
+		if !ok {
+			break
+		}
+		result = append(result, val)
+		if len(result) >= 6 {
+			break
 		}
 	}
-	// 确保至少有 4 个值 (a, b, c, d)
 	if len(result) < 4 {
 		return nil
 	}
 	return result
 }
 
-// parseDeltas 解析 DeltaX/DeltaY 字符串
+// parseDeltas 解析 DeltaX/DeltaY 字符串（Scanner 方式）
 // 支持格式: "1 2 3" 或 "g 5 3" (g表示重复 - g count value)
 func parseDeltas(deltaStr string) []float64 {
-	parts := strings.Fields(deltaStr)
-	result := make([]float64, 0, len(parts))
-
-	i := 0
-	for i < len(parts) {
-		if parts[i] == "g" && i+2 < len(parts) {
-			// "g count value" 格式：重复 count 次 value
-			count, err1 := strconv.Atoi(parts[i+1])
-			val, err2 := strconv.ParseFloat(parts[i+2], 64)
-			if err1 == nil && err2 == nil {
-				for j := 0; j < count; j++ {
-					result = append(result, val)
+	result := make([]float64, 0, 32)
+	scanner := newTokenScanner(deltaStr)
+	
+	for {
+		token, ok := scanner.nextToken()
+		if !ok {
+			break
+		}
+		
+		if token == "g" {
+			// "g count value" 格式
+			countToken, ok1 := scanner.nextToken()
+			valToken, ok2 := scanner.nextToken()
+			if ok1 && ok2 {
+				count, err1 := strconv.Atoi(countToken)
+				val, err2 := strconv.ParseFloat(valToken, 64)
+				if err1 == nil && err2 == nil {
+					for j := 0; j < count; j++ {
+						result = append(result, val)
+					}
 				}
 			}
-			i += 3
 		} else {
-			val, err := strconv.ParseFloat(parts[i], 64)
+			val, err := strconv.ParseFloat(token, 64)
 			if err == nil {
 				result = append(result, val)
 			}
-			i++
 		}
 	}
 	return result
 }
 
-// convertOFDPathToCanvasWithCTM 转换OFD路径命令为Canvas命令JSON，应用CTM变换
+// numberScanner 数字扫描器
+type numberScanner struct {
+	data []byte
+	pos  int
+}
+
+func newNumberScanner(s string) *numberScanner {
+	return &numberScanner{data: []byte(s), pos: 0}
+}
+
+func (s *numberScanner) skipWhitespace() {
+	for s.pos < len(s.data) {
+		c := s.data[s.pos]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+}
+
+func (s *numberScanner) nextFloat() (float64, bool) {
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return 0, false
+	}
+	
+	start := s.pos
+	// 处理符号
+	if s.pos < len(s.data) && (s.data[s.pos] == '-' || s.data[s.pos] == '+') {
+		s.pos++
+	}
+	// 整数部分
+	for s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+		s.pos++
+	}
+	// 小数部分
+	if s.pos < len(s.data) && s.data[s.pos] == '.' {
+		s.pos++
+		for s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+			s.pos++
+		}
+	}
+	// 科学计数法
+	if s.pos < len(s.data) && (s.data[s.pos] == 'e' || s.data[s.pos] == 'E') {
+		s.pos++
+		if s.pos < len(s.data) && (s.data[s.pos] == '-' || s.data[s.pos] == '+') {
+			s.pos++
+		}
+		for s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+			s.pos++
+		}
+	}
+	
+	if s.pos == start {
+		return 0, false
+	}
+	
+	val, err := strconv.ParseFloat(string(s.data[start:s.pos]), 64)
+	if err != nil {
+		return 0, false
+	}
+	return val, true
+}
+
+// tokenScanner 通用 token 扫描器
+type tokenScanner struct {
+	data []byte
+	pos  int
+}
+
+func newTokenScanner(s string) *tokenScanner {
+	return &tokenScanner{data: []byte(s), pos: 0}
+}
+
+func (s *tokenScanner) skipWhitespace() {
+	for s.pos < len(s.data) {
+		c := s.data[s.pos]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+}
+
+func (s *tokenScanner) nextToken() (string, bool) {
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return "", false
+	}
+	
+	start := s.pos
+	for s.pos < len(s.data) {
+		c := s.data[s.pos]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' {
+			break
+		}
+		s.pos++
+	}
+	
+	if s.pos == start {
+		return "", false
+	}
+	return string(s.data[start:s.pos]), true
+}
+
+// pathScanner 路径命令扫描器
+type pathScanner struct {
+	data []byte
+	pos  int
+}
+
+func newPathScanner(s string) *pathScanner {
+	return &pathScanner{data: []byte(s), pos: 0}
+}
+
+func (s *pathScanner) skipWhitespace() {
+	for s.pos < len(s.data) {
+		c := s.data[s.pos]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+}
+
+// nextCommand 获取下一个命令字母，如果当前位置不是字母则返回空
+func (s *pathScanner) nextCommand() (byte, bool) {
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return 0, false
+	}
+	c := s.data[s.pos]
+	if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+		s.pos++
+		return c, true
+	}
+	return 0, false
+}
+
+// peekCommand 查看当前位置是否是命令字母（不移动位置）
+func (s *pathScanner) peekCommand() (byte, bool) {
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return 0, false
+	}
+	c := s.data[s.pos]
+	if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+		return c, true
+	}
+	return 0, false
+}
+
+// nextFloat 获取下一个浮点数
+func (s *pathScanner) nextFloat() (float64, bool) {
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return 0, false
+	}
+	
+	// 检查是否是命令字母
+	c := s.data[s.pos]
+	if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+		return 0, false
+	}
+	
+	start := s.pos
+	// 处理符号
+	if s.pos < len(s.data) && (s.data[s.pos] == '-' || s.data[s.pos] == '+') {
+		s.pos++
+	}
+	// 整数部分
+	for s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+		s.pos++
+	}
+	// 小数部分
+	if s.pos < len(s.data) && s.data[s.pos] == '.' {
+		s.pos++
+		for s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+			s.pos++
+		}
+	}
+	// 科学计数法
+	if s.pos < len(s.data) && (s.data[s.pos] == 'e' || s.data[s.pos] == 'E') {
+		s.pos++
+		if s.pos < len(s.data) && (s.data[s.pos] == '-' || s.data[s.pos] == '+') {
+			s.pos++
+		}
+		for s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+			s.pos++
+		}
+	}
+	
+	if s.pos == start {
+		return 0, false
+	}
+	
+	val, err := strconv.ParseFloat(string(s.data[start:s.pos]), 64)
+	if err != nil {
+		return 0, false
+	}
+	return val, true
+}
+
+func (s *pathScanner) hasMore() bool {
+	s.skipWhitespace()
+	return s.pos < len(s.data)
+}
+
+// convertOFDPathToCanvasWithCTM 转换OFD路径命令为Canvas命令JSON（Scanner 方式）
 func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY float64, ctm []float64) string {
 	var commands []map[string]interface{}
 
-	// CTM 变换逻辑 (保持不变)
+	// CTM 变换函数
 	transformPoint := func(x, y float64) (float64, float64) {
 		if len(ctm) >= 6 {
 			tx := ctm[0]*x + ctm[2]*y + ctm[4]
@@ -1717,112 +1872,84 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 		return (offsetX + x) * scale, (offsetY + y) * scale
 	}
 
-	// 1. 使用正则提取所有 Token (指令字母 或 浮点数)
-	// 这个正则解决了 "粘连" 问题 (如 100-20 或 L100)
-	// 匹配：单个字母 [a-zA-Z]  OR  数字 (支持负号、小数) [-+]?[0-9]*\.?[0-9]+
-	re := regexp.MustCompile(`([a-zA-Z])|([-+]?[0-9]*\.?[0-9]+)`)
-	matches := re.FindAllString(data, -1)
+	scanner := newPathScanner(data)
+	var currentCmd byte = 0
 
-	i := 0
-	length := len(matches)
-	var currentCmd string // 记录当前命令，处理隐含重复
-
-	for i < length {
-		token := matches[i]
-
-		// 判断是否是命令字母
-		firstChar := token[0]
-		if (firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z') {
-			currentCmd = token
-			i++
+	for scanner.hasMore() {
+		// 尝试读取命令字母
+		if cmd, ok := scanner.peekCommand(); ok {
+			scanner.nextCommand()
+			currentCmd = cmd
 		}
-		// 如果不是字母，则沿用上一个 currentCmd (隐含命令逻辑)
 
 		switch currentCmd {
-		case "S", "M": // MoveTo
-			if i+1 < length {
-				x, _ := strconv.ParseFloat(matches[i], 64)
-				y, _ := strconv.ParseFloat(matches[i+1], 64)
+		case 'S', 'M', 's', 'm': // MoveTo
+			x, ok1 := scanner.nextFloat()
+			y, ok2 := scanner.nextFloat()
+			if ok1 && ok2 {
 				tx, ty := transformPoint(x, y)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "M", "x": tx, "y": ty,
 				})
-				i += 2
-				// M 后面的数字如果还有，通常视为 L (LineTo)
-				currentCmd = "L" 
-			} else {
-				i++
+				// M 后面的数字视为 L
+				if currentCmd == 'M' || currentCmd == 'm' {
+					currentCmd = 'L'
+				}
 			}
-		case "L": // LineTo
-			if i+1 < length {
-				x, _ := strconv.ParseFloat(matches[i], 64)
-				y, _ := strconv.ParseFloat(matches[i+1], 64)
+		case 'L', 'l': // LineTo
+			x, ok1 := scanner.nextFloat()
+			y, ok2 := scanner.nextFloat()
+			if ok1 && ok2 {
 				tx, ty := transformPoint(x, y)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "L", "x": tx, "y": ty,
 				})
-				i += 2
-			} else {
-				i++
 			}
-		case "B": // Bezier (OFD 的 B 是贝塞尔)
-			if i+5 < length {
-				x1, _ := strconv.ParseFloat(matches[i], 64)
-				y1, _ := strconv.ParseFloat(matches[i+1], 64)
-				x2, _ := strconv.ParseFloat(matches[i+2], 64)
-				y2, _ := strconv.ParseFloat(matches[i+3], 64)
-				x3, _ := strconv.ParseFloat(matches[i+4], 64)
-				y3, _ := strconv.ParseFloat(matches[i+5], 64)
-				
+		case 'B', 'b': // Bezier (OFD)
+			x1, ok1 := scanner.nextFloat()
+			y1, ok2 := scanner.nextFloat()
+			x2, ok3 := scanner.nextFloat()
+			y2, ok4 := scanner.nextFloat()
+			x3, ok5 := scanner.nextFloat()
+			y3, ok6 := scanner.nextFloat()
+			if ok1 && ok2 && ok3 && ok4 && ok5 && ok6 {
 				tx1, ty1 := transformPoint(x1, y1)
 				tx2, ty2 := transformPoint(x2, y2)
 				tx3, ty3 := transformPoint(x3, y3)
-				
-				// 对应 Canvas 的 bezierCurveTo (cmd: C)
 				commands = append(commands, map[string]interface{}{
 					"cmd": "C",
 					"x1": tx1, "y1": ty1,
 					"x2": tx2, "y2": ty2,
 					"x":  tx3, "y":  ty3,
 				})
-				i += 6
-			} else {
-				i++
 			}
-		case "Q": // Quadratic
-			if i+3 < length {
-				x1, _ := strconv.ParseFloat(matches[i], 64)
-				y1, _ := strconv.ParseFloat(matches[i+1], 64)
-				x2, _ := strconv.ParseFloat(matches[i+2], 64)
-				y2, _ := strconv.ParseFloat(matches[i+3], 64)
-				
+		case 'Q', 'q': // Quadratic
+			x1, ok1 := scanner.nextFloat()
+			y1, ok2 := scanner.nextFloat()
+			x2, ok3 := scanner.nextFloat()
+			y2, ok4 := scanner.nextFloat()
+			if ok1 && ok2 && ok3 && ok4 {
 				tx1, ty1 := transformPoint(x1, y1)
 				tx2, ty2 := transformPoint(x2, y2)
-				
 				commands = append(commands, map[string]interface{}{
 					"cmd": "Q",
 					"x1": tx1, "y1": ty1,
 					"x":  tx2, "y":  ty2,
 				})
-				i += 4
-			} else {
-				i++
 			}
-		case "C": // Close (OFD 的 C 是闭合)
-			// 修正：OFD 的 C 不需要参数，直接映射为 Canvas 的 Z
+		case 'C', 'c': // Close (OFD)
 			commands = append(commands, map[string]interface{}{"cmd": "Z"})
-			// Close 指令后面通常不再跟坐标，直到新的 M 出现
-			// 即使 i 不增加也没关系，下一次循环会读到新的指令
-		case "A": // Arc
-		    // Arc 参数较多，暂时跳过参数防止解析错位
-		    // 严谨做法需要消耗掉 A 的参数 (rx ry rot large sweep x y) 共7个
-			if i+6 < length {
-			    i += 7
-			} else {
-			    i++
+			currentCmd = 0
+		case 'A', 'a': // Arc - 跳过7个参数
+			for i := 0; i < 7; i++ {
+				scanner.nextFloat()
 			}
+		case 'Z', 'z': // Close (SVG style)
+			commands = append(commands, map[string]interface{}{"cmd": "Z"})
+			currentCmd = 0
 		default:
-			i++
+			// 未知命令，尝试跳过一个数字
+			scanner.nextFloat()
 		}
 	}
 
@@ -1834,24 +1961,24 @@ func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64
 	return convertOFDPathToCanvasWithCTM(data, scale, offsetX, offsetY, nil)
 }
 
+// parseBoundary 解析边界框（Scanner 方式）
 func parseBoundary(boundary string) (x, y, w, h float64) {
-	parts := strings.Fields(boundary)
-	if len(parts) >= 4 {
-		x, _ = strconv.ParseFloat(parts[0], 64)
-		y, _ = strconv.ParseFloat(parts[1], 64)
-		w, _ = strconv.ParseFloat(parts[2], 64)
-		h, _ = strconv.ParseFloat(parts[3], 64)
-	}
+	scanner := newNumberScanner(boundary)
+	x, _ = scanner.nextFloat()
+	y, _ = scanner.nextFloat()
+	w, _ = scanner.nextFloat()
+	h, _ = scanner.nextFloat()
 	return
 }
 
+// parseColor 解析颜色（Scanner 方式）
 func parseColor(value string) string {
-	parts := strings.Fields(value)
-	if len(parts) >= 3 {
-		r, _ := strconv.Atoi(parts[0])
-		g, _ := strconv.Atoi(parts[1])
-		b, _ := strconv.Atoi(parts[2])
-		return fmt.Sprintf("rgb(%d,%d,%d)", r, g, b)
+	scanner := newNumberScanner(value)
+	r, ok1 := scanner.nextFloat()
+	g, ok2 := scanner.nextFloat()
+	b, ok3 := scanner.nextFloat()
+	if ok1 && ok2 && ok3 {
+		return fmt.Sprintf("rgb(%d,%d,%d)", int(r), int(g), int(b))
 	}
 	return "#000"
 }

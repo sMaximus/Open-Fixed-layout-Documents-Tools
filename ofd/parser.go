@@ -207,3 +207,41 @@ func (p *Parser) GetPagePath(index int) string {
 	
 	return path.Join(docBase, pageLoc)
 }
+
+// GetPageSize 获取页面尺寸（不渲染内容）
+func (p *Parser) GetPageSize(index int) (float64, float64) {
+	if p.document == nil || index >= len(p.document.Pages.Page) {
+		return 210, 297 // 默认 A4
+	}
+
+	// 获取页面路径
+	pagePath := p.GetPagePath(index)
+	if pagePath == "" {
+		return 210, 297
+	}
+
+	// 读取页面XML
+	pageData, err := p.readFile(pagePath)
+	if err != nil {
+		return 210, 297
+	}
+
+	// 移除命名空间前缀
+	pageXML := removeNamespacePrefix(string(pageData))
+
+	// 解析页面
+	var page Page
+	if err := xml.Unmarshal([]byte(pageXML), &page); err != nil {
+		return 210, 297
+	}
+
+	// 获取页面尺寸
+	if page.Area.PhysicalBox != "" {
+		return parseBox(page.Area.PhysicalBox)
+	}
+	if p.document != nil && p.document.CommonData.PageArea.PhysicalBox != "" {
+		return parseBox(p.document.CommonData.PageArea.PhysicalBox)
+	}
+
+	return 210, 297
+}

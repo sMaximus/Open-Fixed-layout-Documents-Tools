@@ -7,6 +7,12 @@ let currentPageCount = 0;
 const scale = 3.78; // mm to px
 const loadedFonts = new Map();
 
+// 懒加载相关
+let allPagesData = []; // 存储所有页面数据
+const renderedPages = new Set(); // 已渲染的页面索引
+const INITIAL_PAGES = 3; // 首次渲染页数
+const PRELOAD_THRESHOLD = 200; // 预加载阈值（像素）
+
 async function initWasm() {
   const go = new Go();
   const result = await WebAssembly.instantiateStreaming(
@@ -22,46 +28,46 @@ function updateStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
-// 加载 OFD 嵌入字体
+// 加载 OFD 嵌入字体（优化版：快速跳过无嵌入字体的情况）
 async function loadOFDFonts() {
   try {
+    const startTime = performance.now();
     const fontsJson = ofdGetFonts();
+    console.log(
+      `[耗时] ofdGetFonts: ${(performance.now() - startTime).toFixed(2)}ms`,
+    );
+
     const fonts = JSON.parse(fontsJson);
     if (fonts.error) {
       console.warn("获取字体失败:", fonts.error);
       return;
     }
 
-    console.log(`发现 ${fonts.length} 个字体`);
+    // 快速统计有嵌入文件的字体数量
+    const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataURL);
+    console.log(
+      `发现 ${fonts.length} 个字体声明，${embeddedFonts.length} 个有嵌入文件`,
+    );
 
-    // 打印每个字体的详细信息
-    for (const font of fonts) {
-      console.log(
-        `字体: ID=${font.id}, Name=${font.fontName}, Family=${font.familyName}, HasFile=${font.hasFile}`,
-      );
+    // 如果没有嵌入字体，直接返回
+    if (embeddedFonts.length === 0) {
+      console.log("无嵌入字体，将使用系统字体");
+      return;
     }
 
-    for (const font of fonts) {
-      if (font.hasFile && font.dataURL) {
-        const fontName = `OFD_Font_${font.id}`;
-        if (loadedFonts.has(fontName)) continue;
+    // 只加载有嵌入文件的字体
+    for (const font of embeddedFonts) {
+      const fontName = `OFD_Font_${font.id}`;
+      if (loadedFonts.has(fontName)) continue;
 
-        try {
-          // 直接使用 data URL 创建 FontFace
-          const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
-          await fontFace.load();
-          document.fonts.add(fontFace);
-          loadedFonts.set(fontName, fontFace);
-          console.log(`字体加载成功: ${fontName} (${font.fontName})`);
-        } catch (err) {
-          console.warn(`字体加载失败: ${fontName}`, err);
-        }
-      } else {
-        console.log(
-          `字体 ${font.id} 没有嵌入文件，将使用系统字体: ${
-            font.fontName || font.familyName
-          }`,
-        );
+      try {
+        const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
+        await fontFace.load();
+        document.fonts.add(fontFace);
+        loadedFonts.set(fontName, fontFace);
+        console.log(`字体加载成功: ${fontName} (${font.fontName})`);
+      } catch (err) {
+        console.warn(`字体加载失败: ${fontName}`, err);
       }
     }
 
@@ -83,23 +89,55 @@ async function parseAndRender(file) {
     '<div class="empty-state loading"><p>⏳ 正在解析文档...</p></div>';
 
   try {
+    const totalStart = performance.now();
+
+    // 步骤1: 读取文件
+    let stepStart = performance.now();
     const arrayBuffer = await file.arrayBuffer();
     const uint8Array = new Uint8Array(arrayBuffer);
+    console.log(
+      `[耗时] 读取文件: ${(performance.now() - stepStart).toFixed(2)}ms, 大小: ${(uint8Array.length / 1024 / 1024).toFixed(2)}MB`,
+    );
+
+    // 步骤2: 解析OFD文件
+    stepStart = performance.now();
     const resultJson = ofdParseFile(uint8Array);
+    console.log(
+      `[耗时] ofdParseFile: ${(performance.now() - stepStart).toFixed(2)}ms`,
+    );
+
+    // 步骤3: 解析JSON
+    stepStart = performance.now();
     const result = JSON.parse(resultJson);
+    console.log(
+      `[耗时] JSON.parse: ${(performance.now() - stepStart).toFixed(2)}ms`,
+    );
 
     if (result.error) throw new Error(result.error);
 
     currentPageCount = result.PageCount || 0;
+    console.log(`[信息] 文档页数: ${currentPageCount}`);
+
     displayDocInfo(result);
     displayPageList(currentPageCount);
 
+    // 步骤4: 加载字体
     updateStatus("⏳ 加载字体...");
+    stepStart = performance.now();
     await loadOFDFonts();
+    console.log(
+      `[耗时] 加载字体: ${(performance.now() - stepStart).toFixed(2)}ms`,
+    );
 
+    // 步骤5: 渲染页面
     updateStatus("⏳ 渲染页面...");
+    stepStart = performance.now();
     await renderAllPages();
+    console.log(
+      `[耗时] 渲染页面: ${(performance.now() - stepStart).toFixed(2)}ms`,
+    );
 
+    console.log(`[总耗时] ${(performance.now() - totalStart).toFixed(2)}ms`);
     updateStatus(`✅ 已加载 ${currentPageCount} 页`);
   } catch (err) {
     updateStatus("❌ " + err.message);
@@ -145,141 +183,223 @@ function displayPageList(count) {
 
 // ============ 双层渲染架构 ============
 
+/**
+ * 渲染页面（懒加载模式）
+ * 只解析和渲染前3页，其余页面滚动时按需加载
+ */
 async function renderAllPages() {
   const viewer = document.getElementById("viewer");
 
   try {
-    const resultJson = ofdRenderAllPages();
-    const pages = JSON.parse(resultJson);
-    if (pages.error) {
-      viewer.innerHTML = `<div class="empty-state"><p>❌ ${pages.error}</p></div>`;
+    // 获取总页数
+    let stepStart = performance.now();
+    const pageCount = ofdGetPageCount();
+    console.log(
+      `[耗时] ofdGetPageCount: ${(performance.now() - stepStart).toFixed(2)}ms, 页数: ${pageCount}`,
+    );
+
+    if (pageCount <= 0) {
+      viewer.innerHTML = `<div class="empty-state"><p>❌ 无法获取页数</p></div>`;
       return;
     }
 
+    // 初始化
+    allPagesData = new Array(pageCount).fill(null);
+    renderedPages.clear();
     viewer.innerHTML = "";
 
-    for (let i = 0; i < pages.length; i++) {
-      const page = pages[i];
+    // 只解析前 INITIAL_PAGES 页
+    const initialCount = Math.min(INITIAL_PAGES, pageCount);
+
+    for (let i = 0; i < initialCount; i++) {
+      stepStart = performance.now();
+      const pageJson = ofdRenderPage(i);
+      const parseTime = performance.now() - stepStart;
+
+      stepStart = performance.now();
+      const page = JSON.parse(pageJson);
+      const jsonTime = performance.now() - stepStart;
+
+      allPagesData[i] = page;
+      console.log(
+        `[耗时] 页面${i + 1}: ofdRenderPage=${parseTime.toFixed(2)}ms, JSON=${jsonTime.toFixed(2)}ms, 路径=${page.canvasData?.paths?.length || 0}, 图片=${page.canvasData?.images?.length || 0}`,
+      );
+    }
+
+    // 创建所有页面容器
+    stepStart = performance.now();
+    for (let i = 0; i < pageCount; i++) {
       const pageContainer = document.createElement("div");
       pageContainer.id = `page-${i}`;
       pageContainer.className = "page-container";
+      pageContainer.dataset.pageIndex = i;
 
-      // 输出调试信息
-      if (page.debug) {
-        console.log(`页面 ${i + 1} 调试信息:`);
-        if (page.debug.textDebug) {
-          console.log("文本调试:", page.debug.textDebug);
-        }
-        if (page.debug.stamps) {
-          console.log("印章调试:", page.debug.stamps);
-        }
+      // 获取页面尺寸
+      let pxWidth, pxHeight;
+      if (allPagesData[i]) {
+        pxWidth = allPagesData[i].width * scale;
+        pxHeight = allPagesData[i].height * scale;
+      } else {
+        // 未解析的页面使用默认尺寸（A4）
+        pxWidth = 210 * scale;
+        pxHeight = 297 * scale;
       }
 
-      console.log(
-        `页面 ${i + 1}: 文本=${page.textLayer?.length || 0}, 路径=${
-          page.canvasData?.paths?.length || 0
-        }, 图片=${page.canvasData?.images?.length || 0}`,
-      );
+      pageContainer.style.cssText = `
+        width: ${pxWidth}px;
+        height: ${pxHeight}px;
+        position: relative;
+        background: #f5f5f5;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        border-radius: 4px;
+        overflow: hidden;
+        flex-shrink: 0;
+      `;
 
-      if (page.error) {
-        pageContainer.innerHTML = `<div class="page-error">页面 ${
-          i + 1
-        } 渲染失败: ${page.error}</div>`;
-      } else {
-        const pxWidth = page.width * scale;
-        const pxHeight = page.height * scale;
-
-        // 页面容器样式
-        pageContainer.style.cssText = `
-          width: ${pxWidth}px;
-          height: ${pxHeight}px;
-          position: relative;
-          background: #fff;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-          border-radius: 4px;
-          overflow: hidden;
-          flex-shrink: 0;
-        `;
-
-        // ===== 底层：Canvas 层 =====
-        const canvas = document.createElement("canvas");
-        canvas.width = pxWidth;
-        canvas.height = pxHeight;
-        canvas.style.cssText = `
+      if (i >= initialCount) {
+        // 未解析的页面显示占位符
+        const placeholder = document.createElement("div");
+        placeholder.className = "page-placeholder";
+        placeholder.style.cssText = `
           position: absolute;
-          left: 0;
-          top: 0;
-          z-index: 0;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          color: #999;
+          font-size: 14px;
         `;
-        pageContainer.appendChild(canvas);
-
-        // ===== 上层：透明文本层 =====
-        const textLayer = document.createElement("div");
-        textLayer.className = "text-layer";
-        textLayer.style.cssText = `
-          position: absolute;
-          left: 0;
-          top: 0;
-          width: 100%;
-          height: 100%;
-          z-index: 1;
-          overflow: hidden;
-          pointer-events: auto;
-        `;
-        pageContainer.appendChild(textLayer);
-
-        // 等待所有字体加载完成
-        await document.fonts.ready;
-
-        // 渲染底层 Canvas（完整视觉内容）
-        console.log(
-          `渲染页面 ${i + 1}, 图片数量: ${page.canvasData?.images?.length || 0}`,
-        );
-        await renderCanvasLayer(canvas, page.canvasData, page.textLayer);
-
-        // 渲染上层透明文本（用于选择）
-        renderTransparentTextLayer(textLayer, page.textLayer);
-
-        // 只为印章图片添加透明 div 层（用于选中和交互）
-        if (page.canvasData?.images) {
-          for (const img of page.canvasData.images) {
-            // 只为印章添加蒙层，普通图片不需要
-            if (!img.isSeal) continue;
-
-            const sealDiv = document.createElement("div");
-            sealDiv.className = img.placeholder
-              ? "seal-placeholder"
-              : "seal-overlay";
-            sealDiv.style.cssText = `
-              position: absolute;
-              left: ${img.x}px;
-              top: ${img.y}px;
-              width: ${img.width}px;
-              height: ${img.height}px;
-              background: transparent;
-              pointer-events: auto;
-              cursor: ${img.placeholder ? "help" : "pointer"};
-              z-index: 2;
-            `;
-
-            if (img.placeholder) {
-              sealDiv.title = "印章占位框（加载失败）";
-              sealDiv.setAttribute("data-seal-placeholder", "true");
-            } else {
-              sealDiv.title = "电子印章";
-              sealDiv.setAttribute("data-seal", "true");
-            }
-
-            pageContainer.appendChild(sealDiv);
-          }
-        }
+        placeholder.textContent = `第 ${i + 1} 页 (滚动加载)`;
+        pageContainer.appendChild(placeholder);
       }
 
       viewer.appendChild(pageContainer);
     }
+    console.log(
+      `[耗时] 创建${pageCount}个容器: ${(performance.now() - stepStart).toFixed(2)}ms`,
+    );
+
+    // 渲染前 INITIAL_PAGES 页
+    for (let i = 0; i < initialCount; i++) {
+      stepStart = performance.now();
+      await renderPageContent(i);
+      console.log(
+        `[耗时] 渲染页面${i + 1}内容: ${(performance.now() - stepStart).toFixed(2)}ms`,
+      );
+    }
+
+    // 设置滚动监听
+    setupScrollListener();
+
+    console.log(`初始加载完成: 渲染了 ${initialCount} 页，共 ${pageCount} 页`);
   } catch (err) {
     viewer.innerHTML = `<div class="empty-state"><p>❌ 渲染失败: ${err.message}</p></div>`;
     console.error(err);
+  }
+}
+
+/**
+ * 渲染单个页面的内容
+ */
+async function renderPageContent(pageIndex) {
+  if (renderedPages.has(pageIndex)) {
+    return;
+  }
+
+  const page = allPagesData[pageIndex];
+  if (!page) return;
+
+  const pageContainer = document.getElementById(`page-${pageIndex}`);
+  if (!pageContainer) return;
+
+  // 标记为已渲染
+  renderedPages.add(pageIndex);
+
+  if (page.error) {
+    pageContainer.innerHTML = `<div class="page-error">页面 ${pageIndex + 1} 渲染失败: ${page.error}</div>`;
+    return;
+  }
+
+  const pxWidth = page.width * scale;
+  const pxHeight = page.height * scale;
+
+  // 清空并更新容器
+  pageContainer.innerHTML = "";
+  pageContainer.style.background = "#fff";
+  pageContainer.style.width = `${pxWidth}px`;
+  pageContainer.style.height = `${pxHeight}px`;
+
+  // Canvas 层
+  const canvas = document.createElement("canvas");
+  canvas.width = pxWidth;
+  canvas.height = pxHeight;
+  canvas.style.cssText = `position: absolute; left: 0; top: 0; z-index: 0;`;
+  pageContainer.appendChild(canvas); // 文本层
+  const textLayer = document.createElement("div");
+  textLayer.className = "text-layer";
+  textLayer.style.cssText = `
+    position: absolute; left: 0; top: 0;
+    width: 100%; height: 100%;
+    z-index: 1; overflow: hidden; pointer-events: auto;
+  `;
+  pageContainer.appendChild(textLayer);
+
+  // 渲染内容
+  await renderCanvasLayer(canvas, page.canvasData, page.textLayer);
+  renderTransparentTextLayer(textLayer, page.textLayer);
+
+  console.log(`页面 ${pageIndex + 1} 渲染完成`);
+}
+
+/**
+ * 设置滚动监听，实现懒加载
+ */
+function setupScrollListener() {
+  const viewer = document.getElementById("viewer");
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          const pageIndex = parseInt(entry.target.dataset.pageIndex, 10);
+          if (!isNaN(pageIndex) && !renderedPages.has(pageIndex)) {
+            // 按需解析和渲染
+            loadAndRenderPage(pageIndex);
+          }
+        }
+      });
+    },
+    {
+      root: viewer,
+      rootMargin: `${PRELOAD_THRESHOLD}px`,
+      threshold: 0,
+    },
+  );
+
+  document.querySelectorAll(".page-container").forEach((container) => {
+    observer.observe(container);
+  });
+}
+
+/**
+ * 按需加载并渲染页面
+ */
+async function loadAndRenderPage(pageIndex) {
+  if (renderedPages.has(pageIndex)) return;
+  if (allPagesData[pageIndex]) {
+    // 已解析但未渲染
+    await renderPageContent(pageIndex);
+    return;
+  }
+
+  console.log(`按需解析页面 ${pageIndex + 1}...`);
+
+  try {
+    const pageJson = ofdRenderPage(pageIndex);
+    const page = JSON.parse(pageJson);
+    allPagesData[pageIndex] = page;
+    await renderPageContent(pageIndex);
+  } catch (err) {
+    console.error(`加载页面 ${pageIndex + 1} 失败:`, err);
   }
 }
 

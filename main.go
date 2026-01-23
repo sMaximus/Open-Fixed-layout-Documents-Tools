@@ -148,6 +148,78 @@ func renderAllPages(this js.Value, args []js.Value) interface{} {
 	return string(jsonData)
 }
 
+// renderPages 渲染指定范围的页面
+// 参数: startIndex, endIndex (可选，默认渲染前3页)
+func renderPages(this js.Value, args []js.Value) interface{} {
+	if parser == nil {
+		return createErrorResult("请先解析OFD文件")
+	}
+
+	pageCount := parser.GetPageCount()
+	
+	// 默认渲染前3页
+	startIndex := 0
+	endIndex := 3
+	if endIndex > pageCount {
+		endIndex = pageCount
+	}
+
+	// 解析参数
+	if len(args) >= 1 {
+		startIndex = args[0].Int()
+		if startIndex < 0 {
+			startIndex = 0
+		}
+		if startIndex >= pageCount {
+			startIndex = pageCount - 1
+		}
+	}
+	if len(args) >= 2 {
+		endIndex = args[1].Int()
+		if endIndex > pageCount {
+			endIndex = pageCount
+		}
+		if endIndex <= startIndex {
+			endIndex = startIndex + 1
+		}
+	}
+
+	results := make([]*ofd.PageRenderResult, endIndex-startIndex)
+	for i := startIndex; i < endIndex; i++ {
+		results[i-startIndex] = parser.RenderPage(i)
+	}
+
+	jsonData, _ := json.Marshal(results)
+	return string(jsonData)
+}
+
+// getPageInfo 获取页面基本信息（不渲染内容，只返回尺寸）
+func getPageInfo(this js.Value, args []js.Value) interface{} {
+	if parser == nil {
+		return createErrorResult("请先解析OFD文件")
+	}
+
+	pageCount := parser.GetPageCount()
+	type PageInfo struct {
+		Index  int     `json:"index"`
+		Width  float64 `json:"width"`
+		Height float64 `json:"height"`
+	}
+
+	results := make([]PageInfo, pageCount)
+	for i := 0; i < pageCount; i++ {
+		w, h := parser.GetPageSize(i)
+		results[i] = PageInfo{
+			Index:  i,
+			Width:  w,
+			Height: h,
+		}
+	}
+
+	jsonData, _ := json.Marshal(results)
+	return string(jsonData)
+}
+
 // getDebugInfo 获取调试信息
 func getDebugInfo(this js.Value, args []js.Value) interface{} {
 	if parser == nil {
@@ -231,7 +303,9 @@ func main() {
 	js.Global().Set("ofdGetFileContent", js.FuncOf(getFileContent))
 	js.Global().Set("ofdGetPagePath", js.FuncOf(getPagePath))
 	js.Global().Set("ofdRenderPage", js.FuncOf(renderPage))
+	js.Global().Set("ofdRenderPages", js.FuncOf(renderPages))
 	js.Global().Set("ofdRenderAllPages", js.FuncOf(renderAllPages))
+	js.Global().Set("ofdGetPageInfo", js.FuncOf(getPageInfo))
 	js.Global().Set("ofdGetDebugInfo", js.FuncOf(getDebugInfo))
 	js.Global().Set("ofdGetFonts", js.FuncOf(getFonts))
 	js.Global().Set("ofdDumpAllFiles", js.FuncOf(dumpAllFiles))
