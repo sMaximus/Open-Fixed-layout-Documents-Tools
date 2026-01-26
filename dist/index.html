@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OFD 文件解析器 - WebAssembly Demo</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #fff;
+        min-height: 100vh;
+      }
+      .header {
+        background: #16213e;
+        color: #fff;
+        padding: 15px 20px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      }
+      .header h1 {
+        font-size: 20px;
+      }
+      .upload-btn {
+        background: #e94560;
+        color: #fff;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .upload-btn:hover {
+        background: #ff6b6b;
+      }
+      #fileInput {
+        display: none;
+      }
+      .status {
+        color: #aaa;
+        font-size: 14px;
+        margin-left: auto;
+      }
+      .main-container {
+        display: flex;
+        height: calc(100vh - 60px);
+      }
+      .sidebar {
+        width: 280px;
+        background: #16213e;
+        padding: 15px;
+        overflow-y: auto;
+        border-right: 1px solid #0f3460;
+      }
+      .sidebar h3 {
+        color: #e94560;
+        font-size: 14px;
+        margin-bottom: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #0f3460;
+      }
+      .info-item {
+        display: flex;
+        padding: 6px 0;
+        font-size: 13px;
+        color: #ccc;
+      }
+      .info-label {
+        width: 70px;
+        color: #888;
+      }
+      .info-value {
+        flex: 1;
+        word-break: break-all;
+      }
+      .page-list {
+        margin-top: 15px;
+      }
+      .page-item {
+        padding: 8px 12px;
+        background: #0f3460;
+        margin-bottom: 5px;
+        border-radius: 4px;
+        cursor: pointer;
+        color: #ccc;
+        font-size: 13px;
+      }
+      .page-item:hover {
+        background: #1a4a7a;
+      }
+      .page-item.active {
+        background: #e94560;
+        color: #fff;
+      }
+      .viewer {
+        flex: 1;
+        padding: 20px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 20px;
+      }
+      .page-container {
+        margin-bottom: 20px;
+        flex-shrink: 0;
+        display: block;
+      }
+      .page-error {
+        padding: 20px;
+        background: #fff;
+        color: red;
+        border-radius: 4px;
+      }
+      /* 透明文本层 - 用于文字选择 */
+      .text-layer {
+        pointer-events: auto;
+      }
+      .text-layer span {
+        pointer-events: auto;
+      }
+      /* 选中文字时的高亮效果 */
+      .text-layer span::selection {
+        background: rgba(0, 100, 255, 0.3);
+      }
+      .text-layer span::-moz-selection {
+        background: rgba(0, 100, 255, 0.3);
+      }
+      .empty-state {
+        color: #666;
+        text-align: center;
+        padding: 100px 20px;
+      }
+      .empty-state p {
+        margin: 10px 0;
+      }
+      .loading {
+        color: #e94560;
+      }
+      /* 文件内容弹窗 */
+      .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.8);
+        z-index: 1000;
+      }
+      .modal.show {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .modal-content {
+        background: #1a1a2e;
+        width: 90%;
+        height: 90%;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .modal-header {
+        background: #16213e;
+        padding: 15px 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #0f3460;
+      }
+      .modal-header h2 {
+        color: #fff;
+        font-size: 18px;
+      }
+      .modal-close {
+        background: #e94560;
+        color: #fff;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .modal-body {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+      .file-tree {
+        width: 300px;
+        background: #16213e;
+        overflow-y: auto;
+        border-right: 1px solid #0f3460;
+      }
+      .file-tree-item {
+        padding: 10px 15px;
+        color: #ccc;
+        font-size: 13px;
+        cursor: pointer;
+        border-bottom: 1px solid #0f3460;
+        word-break: break-all;
+      }
+      .file-tree-item:hover {
+        background: #0f3460;
+      }
+      .file-tree-item.active {
+        background: #e94560;
+        color: #fff;
+      }
+      .file-tree-item .size {
+        color: #888;
+        font-size: 11px;
+      }
+      .file-content {
+        flex: 1;
+        overflow: auto;
+        padding: 15px;
+      }
+      .file-content pre {
+        color: #0f0;
+        font-family: "Consolas", "Monaco", monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        margin: 0;
+      }
+      .file-content .binary-info {
+        color: #888;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>📄 OFD 解析器</h1>
+      <button
+        class="upload-btn"
+        onclick="document.getElementById('fileInput').click()"
+      >
+        选择 OFD 文件
+      </button>
+      <button
+        class="upload-btn"
+        style="background: #0f3460"
+        onclick="showFileContents()"
+      >
+        查看文件内容
+      </button>
+      <input type="file" id="fileInput" accept=".ofd" />
+      <span class="status" id="status">⏳ 加载 WASM...</span>
+    </div>
+
+    <div class="main-container">
+      <div class="sidebar">
+        <h3>📋 文档信息</h3>
+        <div id="docInfo">
+          <div class="info-item">
+            <span class="info-label">状态</span
+            ><span class="info-value">未加载</span>
+          </div>
+        </div>
+
+        <h3 style="margin-top: 20px">📑 页面列表</h3>
+        <div class="page-list" id="pageList"></div>
+      </div>
+
+      <div class="viewer" id="viewer">
+        <div class="empty-state">
+          <p style="font-size: 48px">📄</p>
+          <p>请选择 OFD 文件</p>
+          <p style="font-size: 12px; color: #555">支持拖拽文件到页面</p>
+        </div>
+      </div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script src="app.js"></script>
+
+    <!-- 文件内容弹窗 -->
+    <div class="modal" id="fileModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>📦 OFD 压缩包内容</h2>
+          <button class="modal-close" onclick="closeFileModal()">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="file-tree" id="fileTree"></div>
+          <div class="file-content" id="fileContent">
+            <p style="color: #888">← 点击左侧文件查看内容</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let allFilesData = null;
+
+      function showFileContents() {
+        if (!wasmReady) {
+          alert("WASM 未加载完成");
+          return;
+        }
+
+        try {
+          const resultJson = ofdDumpAllFiles();
+          allFilesData = JSON.parse(resultJson);
+
+          if (allFilesData.error) {
+            alert(allFilesData.error);
+            return;
+          }
+
+          // 构建文件树
+          const fileTree = document.getElementById("fileTree");
+          fileTree.innerHTML = "";
+
+          const files = Object.keys(allFilesData).sort();
+          for (const fileName of files) {
+            const fileInfo = allFilesData[fileName];
+            const div = document.createElement("div");
+            div.className = "file-tree-item";
+            div.innerHTML = `
+              <div>${fileName}</div>
+              <div class="size">${fileInfo.type} - ${formatSize(
+                fileInfo.size,
+              )}</div>
+            `;
+            div.onclick = () => showFileContent(fileName, div);
+            fileTree.appendChild(div);
+          }
+
+          document.getElementById("fileModal").classList.add("show");
+        } catch (err) {
+          alert("获取文件内容失败: " + err.message);
+        }
+      }
+
+      function showFileContent(fileName, element) {
+        // 高亮选中项
+        document
+          .querySelectorAll(".file-tree-item")
+          .forEach((el) => el.classList.remove("active"));
+        element.classList.add("active");
+
+        const fileInfo = allFilesData[fileName];
+        const contentDiv = document.getElementById("fileContent");
+
+        if (fileInfo.type === "text") {
+          // 格式化 XML
+          let content = fileInfo.content;
+          try {
+            content = formatXml(content);
+          } catch (e) {}
+          contentDiv.innerHTML = `<pre>${escapeHtml(content)}</pre>`;
+        } else {
+          contentDiv.innerHTML = `<p class="binary-info">二进制文件，大小: ${formatSize(
+            fileInfo.size,
+          )}</p>`;
+        }
+      }
+
+      function closeFileModal() {
+        document.getElementById("fileModal").classList.remove("show");
+      }
+
+      function formatSize(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / 1024 / 1024).toFixed(1) + " MB";
+      }
+
+      function escapeHtml(text) {
+        return text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function formatXml(xml) {
+        // 简单的 XML 格式化
+        let formatted = "";
+        let indent = 0;
+        const lines = xml.replace(/>\s*</g, ">\n<").split("\n");
+
+        for (let line of lines) {
+          line = line.trim();
+          if (!line) continue;
+
+          if (line.startsWith("</")) {
+            indent = Math.max(0, indent - 1);
+          }
+
+          formatted += "  ".repeat(indent) + line + "\n";
+
+          if (
+            line.startsWith("<") &&
+            !line.startsWith("</") &&
+            !line.startsWith("<?") &&
+            !line.endsWith("/>") &&
+            !line.includes("</")
+          ) {
+            indent++;
+          }
+        }
+
+        return formatted;
+      }
+
+      // ESC 关闭弹窗
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeFileModal();
+      });
+    </script>
+  </body>
+</html>

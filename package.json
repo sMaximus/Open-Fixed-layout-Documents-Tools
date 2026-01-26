@@ -1,0 +1,12 @@
+{
+  "name": "ofd-viewer",
+  "version": "1.0.0",
+  "description": "OFD Document Viewer",
+  "scripts": {
+    "build:js": "node build-js.js",
+    "build": "node build-js.js"
+  },
+  "devDependencies": {
+    "terser": "^5.31.0"
+  }
+}
