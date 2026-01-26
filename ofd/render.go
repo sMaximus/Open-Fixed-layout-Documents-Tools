@@ -414,7 +414,7 @@ func (p *Parser) extractRenderData(result *PageRenderResult, page *Page, scale f
 
 		// 提取路径
 		for _, pathObj := range layer.PathObjects {
-			p.extractPath(result, &pathObj, scale)
+			p.extractPath(result, &pathObj, scale, result.Width, result.Height)
 		}
 
 		// 提取文本
@@ -1050,7 +1050,8 @@ func (p *Parser) extractImage(result *PageRenderResult, img *ImageObject, scale 
 }
 
 // extractPath 提取路径数据
-func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scale float64) {
+// pageWidth, pageHeight: 页面尺寸（mm），用于判断闭合线段是否在边界上
+func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scale float64, pageWidth, pageHeight float64) {
 	if pathObj.AbbreviatedData == "" {
 		return
 	}
@@ -1061,6 +1062,8 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 	var pattern *PatternData
 	
 	// 处理描边颜色
+	// OFD 规范：只要定义了 StrokeColor，就应该进行描边渲染
+	// WPS 行为：当定义了颜色但未定义线宽时，渲染引擎会将其视为 1 像素线
 	if pathObj.StrokeColor != nil && pathObj.StrokeColor.Value != "" {
 		strokeColor = parseColor(pathObj.StrokeColor.Value)
 	} else if pathObj.Stroke || pathObj.LineWidth > 0 {
@@ -1097,16 +1100,15 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 	// 默认线宽
 	lineWidth := pathObj.LineWidth
 	if lineWidth == 0 {
-		lineWidth = 0.353 // 默认 1pt = 0.353mm
-	}
-	
-	// 如果有 CTM 变换矩阵，lineWidth 需要乘以 CTM 的缩放因子
+		lineWidth = 1/scale
+	}else if len(ctm) >= 1 && ctm[0] > 0 {
+		// 如果有 CTM 变换矩阵，lineWidth 需要乘以 CTM 的缩放因子
 	// CTM 格式: [a, b, c, d, e, f]，其中 a 是 x 方向缩放因子
 	// OFD 中 LineWidth 是在对象坐标系中定义的，需要乘以 CTM 缩放来得到页面坐标系中的线宽
-	if len(ctm) >= 1 && ctm[0] > 0 {
+
 		lineWidth = lineWidth * ctm[0]
 	}
-
+	
 	// 正确的坐标变换流程：
 	// 1. PathObject 的 AbbreviatedData 中的坐标是相对于对象自身坐标系的（通常从 0,0 开始）
 	// 2. CTM 定义了对象坐标系到页面坐标系的变换（缩放 + 旋转）
@@ -1165,8 +1167,9 @@ func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scal
 	}
 
 	// 转换路径命令：应用 CTM 缩放和 Boundary 平移
+	// 传递页面尺寸（像素），用于判断闭合线段是否在边界上
 	result.CanvasData.Paths = append(result.CanvasData.Paths, PathData{
-		Commands:    convertOFDPathToCanvasWithCTM(pathObj.AbbreviatedData, scale, bx, by, ctm),
+		Commands:    convertOFDPathToCanvasWithCTM(pathObj.AbbreviatedData, scale, bx, by, ctm, pageWidth*scale, pageHeight*scale),
 		FillColor:   fillColor,
 		StrokeColor: strokeColor,
 		LineWidth:   lineWidth * scale,
@@ -1405,8 +1408,9 @@ func (p *Parser) parsePattern(pattern *Pattern, scale float64) *PatternData {
 		}
 
 		// 添加路径到 Pattern（坐标保持 mm 单位，不乘以 scale）
+		// Pattern 内部路径不需要检查页面边界，传递 0, 0
 		patternData.CellPaths = append(patternData.CellPaths, PathData{
-			Commands:    convertOFDPathToCanvasWithCTM(pathObj.AbbreviatedData, 1.0, bx, by, ctm),
+			Commands:    convertOFDPathToCanvasWithCTM(pathObj.AbbreviatedData, 1.0, bx, by, ctm, 0, 0),
 			FillColor:   fillColor,
 			StrokeColor: strokeColor,
 			LineWidth:   lineWidth,
@@ -1857,7 +1861,8 @@ func (s *pathScanner) hasMore() bool {
 }
 
 // convertOFDPathToCanvasWithCTM 转换OFD路径命令为Canvas命令JSON（Scanner 方式）
-func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY float64, ctm []float64) string {
+// pageWidth, pageHeight: 页面尺寸（像素），用于判断闭合线段是否在边界上
+func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY float64, ctm []float64, pageWidth, pageHeight float64) string {
 	var commands []map[string]interface{}
 
 	// CTM 变换函数
@@ -1872,8 +1877,36 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 		return (offsetX + x) * scale, (offsetY + y) * scale
 	}
 
+	// 判断线段是否在页面边界上
+	// 边界容差（像素）
+	const tolerance = 1.0
+	isOnBoundary := func(x1, y1, x2, y2 float64) bool {
+		// 检查是否在 x=0 边界上（左边界）
+		if x1 <= tolerance && x2 <= tolerance {
+			return true
+		}
+		// 检查是否在 y=0 边界上（上边界）
+		if y1 <= tolerance && y2 <= tolerance {
+			return true
+		}
+		// 检查是否在 x=pageWidth 边界上（右边界）
+		if pageWidth > 0 && x1 >= pageWidth-tolerance && x2 >= pageWidth-tolerance {
+			return true
+		}
+		// 检查是否在 y=pageHeight 边界上（下边界）
+		if pageHeight > 0 && y1 >= pageHeight-tolerance && y2 >= pageHeight-tolerance {
+			return true
+		}
+		return false
+	}
+
 	scanner := newPathScanner(data)
 	var currentCmd byte = 0
+	
+	// 记录路径起点和当前点，用于判断闭合线段
+	var startX, startY float64 // 当前子路径的起点（像素坐标）
+	var currentX, currentY float64 // 当前点（像素坐标）
+	hasStart := false
 
 	for scanner.hasMore() {
 		// 尝试读取命令字母
@@ -1891,6 +1924,10 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 				commands = append(commands, map[string]interface{}{
 					"cmd": "M", "x": tx, "y": ty,
 				})
+				// 记录起点
+				startX, startY = tx, ty
+				currentX, currentY = tx, ty
+				hasStart = true
 				// M 后面的数字视为 L
 				if currentCmd == 'M' || currentCmd == 'm' {
 					currentCmd = 'L'
@@ -1904,6 +1941,7 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 				commands = append(commands, map[string]interface{}{
 					"cmd": "L", "x": tx, "y": ty,
 				})
+				currentX, currentY = tx, ty
 			}
 		case 'B', 'b': // Bezier (OFD)
 			x1, ok1 := scanner.nextFloat()
@@ -1922,6 +1960,7 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 					"x2": tx2, "y2": ty2,
 					"x":  tx3, "y":  ty3,
 				})
+				currentX, currentY = tx3, ty3
 			}
 		case 'Q', 'q': // Quadratic
 			x1, ok1 := scanner.nextFloat()
@@ -1936,17 +1975,32 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 					"x1": tx1, "y1": ty1,
 					"x":  tx2, "y":  ty2,
 				})
+				currentX, currentY = tx2, ty2
 			}
 		case 'C', 'c': // Close (OFD)
-			commands = append(commands, map[string]interface{}{"cmd": "Z"})
+			// 检查闭合线段是否在页面边界上
+			// 如果闭合线段（从当前点到起点）落在边界上，则忽略闭合指令
+			if hasStart && isOnBoundary(currentX, currentY, startX, startY) {
+				// 闭合线段在边界上，忽略闭合，作为开放路径处理
+				// 不添加 Z 命令
+			} else {
+				commands = append(commands, map[string]interface{}{"cmd": "Z"})
+			}
 			currentCmd = 0
+			hasStart = false
 		case 'A', 'a': // Arc - 跳过7个参数
 			for i := 0; i < 7; i++ {
 				scanner.nextFloat()
 			}
 		case 'Z', 'z': // Close (SVG style)
-			commands = append(commands, map[string]interface{}{"cmd": "Z"})
+			// 同样检查闭合线段是否在页面边界上
+			if hasStart && isOnBoundary(currentX, currentY, startX, startY) {
+				// 闭合线段在边界上，忽略闭合
+			} else {
+				commands = append(commands, map[string]interface{}{"cmd": "Z"})
+			}
 			currentCmd = 0
+			hasStart = false
 		default:
 			// 未知命令，尝试跳过一个数字
 			scanner.nextFloat()
@@ -1958,7 +2012,7 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 }
 // convertOFDPathToCanvas 转换OFD路径命令为Canvas命令JSON（向后兼容）
 func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64) string {
-	return convertOFDPathToCanvasWithCTM(data, scale, offsetX, offsetY, nil)
+	return convertOFDPathToCanvasWithCTM(data, scale, offsetX, offsetY, nil, 0, 0)
 }
 
 // parseBoundary 解析边界框（Scanner 方式）

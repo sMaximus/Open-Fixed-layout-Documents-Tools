@@ -893,7 +893,7 @@ async function drawPath(ctx, pathData) {
     if (pathData.strokeColor && pathData.strokeColor !== "transparent") {
       ctx.strokeStyle = pathData.strokeColor;
       ctx.lineWidth = pathData.lineWidth || 1;
-
+      console.warn(ctx.lineWidth);
       // 设置线条连接样式
       if (pathData.lineJoin) {
         ctx.lineJoin = pathData.lineJoin;

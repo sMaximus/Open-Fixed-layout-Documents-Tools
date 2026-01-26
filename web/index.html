@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -11,9 +11,9 @@
         padding: 0;
       }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          sans-serif;
-        background: #1a1a2e;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #fff;
         min-height: 100vh;
       }
       .header {
@@ -330,8 +330,8 @@
             div.innerHTML = `
               <div>${fileName}</div>
               <div class="size">${fileInfo.type} - ${formatSize(
-              fileInfo.size
-            )}</div>
+                fileInfo.size,
+              )}</div>
             `;
             div.onclick = () => showFileContent(fileName, div);
             fileTree.appendChild(div);
@@ -362,7 +362,7 @@
           contentDiv.innerHTML = `<pre>${escapeHtml(content)}</pre>`;
         } else {
           contentDiv.innerHTML = `<p class="binary-info">二进制文件，大小: ${formatSize(
-            fileInfo.size
+            fileInfo.size,
           )}</p>`;
         }
       }
