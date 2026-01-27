@@ -1,0 +1,415 @@
+//! 页面结构定义
+
+use serde::{Deserialize, Serialize};
+
+/// 页面结构
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename = "Page")]
+pub struct Page {
+    #[serde(rename = "Area", default)]
+    pub area: PageAreaDef,
+    #[serde(rename = "Content", default)]
+    pub content: Content,
+    #[serde(rename = "Layer", default)]
+    pub layer: Vec<Layer>,
+    #[serde(rename = "Template", default)]
+    pub template: Vec<Template>,
+}
+
+/// 页面区域定义
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct PageAreaDef {
+    #[serde(rename = "PhysicalBox", default)]
+    pub physical_box: String,
+}
+
+/// 模板引用
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Template {
+    #[serde(rename = "@TemplateID", default)]
+    pub template_id: String,
+    #[serde(rename = "@ZOrder", default)]
+    pub z_order: String,
+}
+
+/// 页面内容
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Content {
+    #[serde(rename = "Layer", default)]
+    pub layer: Vec<Layer>,
+}
+
+/// 图层
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Layer {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Type", default)]
+    pub layer_type: String,
+    #[serde(rename = "@DrawParam", default)]
+    pub draw_param: String,
+    #[serde(rename = "TextObject", default)]
+    pub text_objects: Vec<TextObject>,
+    #[serde(rename = "PathObject", default)]
+    pub path_objects: Vec<PathObject>,
+    #[serde(rename = "ImageObject", default)]
+    pub image_objects: Vec<ImageObject>,
+}
+
+/// 文本对象
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct TextObject {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Boundary", default)]
+    pub boundary: String,
+    #[serde(rename = "@Font", default)]
+    pub font: String,
+    #[serde(rename = "@Size", default)]
+    pub size: f64,
+    #[serde(rename = "@HScale", default)]
+    pub h_scale: f64,
+    #[serde(rename = "@Weight", default)]
+    pub weight: i32,
+    #[serde(rename = "@Italic", default)]
+    pub italic: bool,
+    #[serde(rename = "@Stroke", default)]
+    pub stroke: bool,
+    #[serde(rename = "@Fill", default)]
+    pub fill: bool,
+    #[serde(rename = "@LineWidth", default)]
+    pub line_width: f64,
+    #[serde(rename = "@CTM", default)]
+    pub ctm: String,
+    #[serde(rename = "FillColor", default)]
+    pub fill_color: Option<Color>,
+    #[serde(rename = "StrokeColor", default)]
+    pub stroke_color: Option<Color>,
+    #[serde(rename = "TextCode", default)]
+    pub text_code: Vec<TextCode>,
+    #[serde(rename = "CGTransform", default)]
+    pub cg_transform: Vec<CGTransform>,
+}
+
+/// 文本内容
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct TextCode {
+    #[serde(rename = "@X", default)]
+    pub x: f64,
+    #[serde(rename = "@Y", default)]
+    pub y: f64,
+    #[serde(rename = "@DeltaX", default)]
+    pub delta_x: String,
+    #[serde(rename = "@DeltaY", default)]
+    pub delta_y: String,
+    #[serde(rename = "$text", default)]
+    pub content: String,
+}
+
+/// 变换矩阵
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct CGTransform {
+    #[serde(rename = "@CodePosition", default)]
+    pub code_position: i32,
+    #[serde(rename = "@CodeCount", default)]
+    pub code_count: i32,
+    #[serde(rename = "@GlyphCount", default)]
+    pub glyph_count: i32,
+    #[serde(rename = "@Glyphs", default)]
+    pub glyphs: String,
+}
+
+/// 路径对象
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct PathObject {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Boundary", default)]
+    pub boundary: String,
+    #[serde(rename = "@CTM", default)]
+    pub ctm: String,
+    #[serde(rename = "@LineWidth", default)]
+    pub line_width: f64,
+    #[serde(rename = "@Join", default)]
+    pub join: String,
+    #[serde(rename = "@Cap", default)]
+    pub cap: String,
+    #[serde(rename = "@Stroke", default)]
+    pub stroke: bool,
+    #[serde(rename = "@Fill", default)]
+    pub fill: bool,
+    #[serde(rename = "FillColor", default)]
+    pub fill_color: Option<ColorOrShd>,
+    #[serde(rename = "StrokeColor", default)]
+    pub stroke_color: Option<Color>,
+    #[serde(rename = "AbbreviatedData", default)]
+    pub abbreviated_data: String,
+}
+
+/// 图像对象
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ImageObject {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Boundary", default)]
+    pub boundary: String,
+    #[serde(rename = "@ResourceID", default)]
+    pub resource_id: String,
+    #[serde(rename = "@CTM", default)]
+    pub ctm: String,
+}
+
+/// 颜色
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct Color {
+    #[serde(rename = "@Value", default)]
+    pub value: String,
+    #[serde(rename = "@ColorSpace", default)]
+    pub color_space: String,
+}
+
+/// 颜色或渐变
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ColorOrShd {
+    #[serde(rename = "@Value", default)]
+    pub value: String,
+    #[serde(rename = "AxialShd", default)]
+    pub axial_shd: Option<AxialShd>,
+    #[serde(rename = "RadialShd", default)]
+    pub radial_shd: Option<RadialShd>,
+    #[serde(rename = "Pattern", default)]
+    pub pattern: Option<Pattern>,
+}
+
+/// 轴向渐变
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct AxialShd {
+    #[serde(rename = "@StartPoint", default)]
+    pub start_point: String,
+    #[serde(rename = "@EndPoint", default)]
+    pub end_point: String,
+    #[serde(rename = "Segment", default)]
+    pub segment: Vec<Segment>,
+}
+
+/// 径向渐变
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct RadialShd {
+    #[serde(rename = "@StartPoint", default)]
+    pub start_point: String,
+    #[serde(rename = "@EndPoint", default)]
+    pub end_point: String,
+    #[serde(rename = "@StartRadius", default)]
+    pub start_radius: f64,
+    #[serde(rename = "@EndRadius", default)]
+    pub end_radius: f64,
+    #[serde(rename = "Segment", default)]
+    pub segment: Vec<Segment>,
+}
+
+/// 渐变段
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Segment {
+    #[serde(rename = "@Position", default)]
+    pub position: f64,
+    #[serde(rename = "Color", default)]
+    pub color: Color,
+}
+
+/// 资源文件
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename = "Res")]
+pub struct Res {
+    #[serde(rename = "@BaseLoc", default)]
+    pub base_loc: String,
+    #[serde(rename = "Fonts", default)]
+    pub fonts: Option<Fonts>,
+    #[serde(rename = "MultiMedias", default)]
+    pub multi_medias: Option<MultiMedias>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Fonts {
+    #[serde(rename = "Font", default)]
+    pub font: Vec<Font>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct MultiMedias {
+    #[serde(rename = "MultiMedia", default)]
+    pub multi_media: Vec<MultiMedia>,
+}
+
+/// 字体
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct Font {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@FontName", default)]
+    pub font_name: String,
+    #[serde(rename = "@FamilyName", default)]
+    pub family_name: String,
+    #[serde(rename = "FontFile", default)]
+    pub font_file: String,
+}
+
+/// 多媒体资源
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct MultiMedia {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Type", default)]
+    pub media_type: String,
+    #[serde(rename = "MediaFile", default)]
+    pub media_file: String,
+}
+
+/// 签章结构
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename = "Signatures")]
+pub struct Signatures {
+    #[serde(rename = "Signature", default)]
+    pub signature: Vec<Signature>,
+}
+
+/// 签章
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Signature {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Type", default)]
+    pub sig_type: String,
+    #[serde(rename = "@BaseLoc", default)]
+    pub base_loc: String,
+}
+
+/// 签章XML
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename = "Signature")]
+pub struct SignatureXML {
+    #[serde(rename = "SignedInfo", default)]
+    pub signed_info: SignedInfo,
+    #[serde(rename = "SignedValue", default)]
+    pub signed_value: String,
+}
+
+/// 签章信息
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct SignedInfo {
+    #[serde(rename = "StampAnnot", default)]
+    pub stamp_annot: Vec<StampAnnot>,
+    #[serde(rename = "Provider", default)]
+    pub provider: String,
+    #[serde(rename = "SignatureMethod", default)]
+    pub signature_method: String,
+}
+
+/// 印章注释
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct StampAnnot {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@PageRef", default)]
+    pub page_ref: String,
+    #[serde(rename = "@Boundary", default)]
+    pub boundary: String,
+}
+
+/// Pattern 图案填充
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct Pattern {
+    #[serde(rename = "@Width", default)]
+    pub width: f64,
+    #[serde(rename = "@Height", default)]
+    pub height: f64,
+    #[serde(rename = "@XStep", default)]
+    pub x_step: f64,
+    #[serde(rename = "@YStep", default)]
+    pub y_step: f64,
+    #[serde(rename = "@RelativeTo", default)]
+    pub relative_to: String,
+    #[serde(rename = "@CTM", default)]
+    pub ctm: String,
+    #[serde(rename = "CellContent", default)]
+    pub cell_content: CellContent,
+}
+
+/// CellContent Pattern 单元格内容
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct CellContent {
+    #[serde(rename = "ImageObject", default)]
+    pub image_objects: Vec<ImageObject>,
+    #[serde(rename = "PathObject", default)]
+    pub path_objects: Vec<PathObject>,
+    #[serde(rename = "TextObject", default)]
+    pub text_objects: Vec<TextObject>,
+}
+
+/// 页面注释列表
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename = "PageAnnot")]
+pub struct PageAnnot {
+    #[serde(rename = "Annot", default)]
+    pub annots: Vec<AnnotElement>,
+}
+
+/// 注释元素
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct AnnotElement {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Type", default)]
+    pub annot_type: String,
+    #[serde(rename = "@Creator", default)]
+    pub creator: String,
+    #[serde(rename = "@Subtype", default)]
+    pub subtype: String,
+    #[serde(rename = "Appearance", default)]
+    pub appearance: AnnotAppearance,
+}
+
+/// 注释外观
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct AnnotAppearance {
+    #[serde(rename = "@Boundary", default)]
+    pub boundary: String,
+    #[serde(rename = "PageBlock", default)]
+    pub page_blocks: Vec<AnnotPageBlock>,
+}
+
+/// 注释页面块
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct AnnotPageBlock {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "ImageObject", default)]
+    pub image_objects: Vec<ImageObject>,
+}
+
+/// 印章数据 (Seal.xml)
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename = "Seal")]
+pub struct SealXML {
+    #[serde(rename = "SealID", default)]
+    pub seal_id: String,
+    #[serde(rename = "Type", default)]
+    pub seal_type: String,
+    #[serde(rename = "Picture", default)]
+    pub picture: SealPicture,
+    #[serde(rename = "SealData", default)]
+    pub seal_data: String,
+}
+
+/// 印章图片
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct SealPicture {
+    #[serde(rename = "@Type", default)]
+    pub picture_type: String,
+    #[serde(rename = "@Width", default)]
+    pub width: f64,
+    #[serde(rename = "@Height", default)]
+    pub height: f64,
+    #[serde(rename = "$text", default)]
+    pub data: String,
+}
+

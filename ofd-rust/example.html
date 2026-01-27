@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OFD Rust WASM 示例</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        padding: 20px;
+      }
+      #canvas {
+        border: 1px solid #ccc;
+      }
+      #info {
+        margin: 10px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>OFD Rust WASM 查看器</h1>
+    <input type="file" id="fileInput" accept=".ofd" />
+    <div id="info"></div>
+    <canvas id="canvas"></canvas>
+
+    <script type="module">
+      import init, { OFDParser } from "./pkg/ofd_rust.js";
+
+      async function main() {
+        await init();
+
+        const fileInput = document.getElementById("fileInput");
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const info = document.getElementById("info");
+
+        fileInput.addEventListener("change", async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const arrayBuffer = await file.arrayBuffer();
+          const data = new Uint8Array(arrayBuffer);
+
+          try {
+            console.log("Creating parser with data size:", data.length);
+            const parser = new OFDParser(data);
+            console.log("Parser created successfully");
+
+            const result = parser.parse();
+            console.log("Parse result:", result);
+
+            const pageCount = result.pageCount || 0;
+            const filesCount = result.files ? result.files.length : 0;
+
+            if (result.error) {
+              info.textContent = `错误: ${result.error}`;
+              return;
+            }
+
+            info.textContent = `页数: ${pageCount}, 文件数: ${filesCount}`;
+
+            if (pageCount === 0) {
+              info.textContent += " - 无法解析文档";
+              if (filesCount > 0) {
+                info.textContent += ` (找到 ${filesCount} 个文件)`;
+              }
+              return;
+            }
+
+            // 渲染第一页
+            const pageResult = parser.render_page(0);
+            console.log("Render result:", pageResult);
+
+            if (pageResult.error) {
+              info.textContent += ` 错误: ${pageResult.error}`;
+              return;
+            }
+
+            canvas.width = pageResult.width;
+            canvas.height = pageResult.height;
+
+            // 白色背景
+            ctx.fillStyle = "white";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 绘制路径
+            if (pageResult.canvasData && pageResult.canvasData.paths) {
+              for (const path of pageResult.canvasData.paths) {
+                const commands = JSON.parse(path.commands);
+                ctx.beginPath();
+                for (const cmd of commands) {
+                  switch (cmd.cmd) {
+                    case "M":
+                      ctx.moveTo(cmd.x, cmd.y);
+                      break;
+                    case "L":
+                      ctx.lineTo(cmd.x, cmd.y);
+                      break;
+                    case "C":
+                      ctx.bezierCurveTo(
+                        cmd.x1,
+                        cmd.y1,
+                        cmd.x2,
+                        cmd.y2,
+                        cmd.x,
+                        cmd.y,
+                      );
+                      break;
+                    case "Q":
+                      ctx.quadraticCurveTo(cmd.x1, cmd.y1, cmd.x, cmd.y);
+                      break;
+                    case "Z":
+                      ctx.closePath();
+                      break;
+                  }
+                }
+                if (path.fillColor) {
+                  ctx.fillStyle = path.fillColor;
+                  ctx.fill();
+                }
+                if (path.strokeColor) {
+                  ctx.strokeStyle = path.strokeColor;
+                  ctx.lineWidth = path.lineWidth;
+                  ctx.stroke();
+                }
+              }
+            }
+
+            // 绘制图片
+            if (pageResult.canvasData && pageResult.canvasData.images) {
+              for (const img of pageResult.canvasData.images) {
+                const image = new Image();
+                image.src = img.dataURL;
+                await new Promise((resolve) => (image.onload = resolve));
+                ctx.drawImage(image, img.x, img.y, img.width, img.height);
+              }
+            }
+
+            // 绘制文本
+            if (pageResult.textLayer) {
+              for (const text of pageResult.textLayer) {
+                ctx.font = `${text.fontSize}px ${text.fontFamily}`;
+                ctx.fillStyle = text.color;
+                ctx.fillText(text.text, text.x, text.y);
+              }
+            }
+
+            info.textContent += " - 渲染完成";
+          } catch (err) {
+            console.error("Error:", err);
+            info.textContent = `错误: ${err.message || err}`;
+          }
+        });
+      }
+
+      main();
+    </script>
+  </body>
+</html>
