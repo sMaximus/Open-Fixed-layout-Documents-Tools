@@ -20,7 +20,6 @@ pub struct ParseResult {
 
 /// OFD 解析器
 pub struct Parser {
-    data: Vec<u8>,
     files: Vec<String>,
     file_contents: HashMap<String, Vec<u8>>,
     pub ofd: Option<OFDDocument>,
@@ -54,7 +53,6 @@ impl Parser {
         }
 
         Ok(Parser {
-            data,
             files,
             file_contents,
             ofd: None,

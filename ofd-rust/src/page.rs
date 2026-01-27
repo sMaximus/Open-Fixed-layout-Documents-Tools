@@ -48,12 +48,40 @@ pub struct Layer {
     pub layer_type: String,
     #[serde(rename = "@DrawParam", default)]
     pub draw_param: String,
-    #[serde(rename = "TextObject", default)]
-    pub text_objects: Vec<TextObject>,
-    #[serde(rename = "PathObject", default)]
-    pub path_objects: Vec<PathObject>,
-    #[serde(rename = "ImageObject", default)]
-    pub image_objects: Vec<ImageObject>,
+    #[serde(rename = "$value", default)]
+    pub objects: Vec<LayerObject>,
+}
+
+/// 图层对象（可以是文本、路径或图片）
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum LayerObject {
+    TextObject(TextObject),
+    PathObject(PathObject),
+    ImageObject(ImageObject),
+}
+
+impl Layer {
+    pub fn text_objects(&self) -> impl Iterator<Item = &TextObject> {
+        self.objects.iter().filter_map(|o| match o {
+            LayerObject::TextObject(t) => Some(t),
+            _ => None,
+        })
+    }
+
+    pub fn path_objects(&self) -> impl Iterator<Item = &PathObject> {
+        self.objects.iter().filter_map(|o| match o {
+            LayerObject::PathObject(p) => Some(p),
+            _ => None,
+        })
+    }
+
+    pub fn image_objects(&self) -> impl Iterator<Item = &ImageObject> {
+        self.objects.iter().filter_map(|o| match o {
+            LayerObject::ImageObject(i) => Some(i),
+            _ => None,
+        })
+    }
 }
 
 /// 文本对象

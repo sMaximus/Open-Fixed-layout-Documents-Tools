@@ -36,14 +36,14 @@ impl OFDParser {
         let result = self.parser.parse()
             .map_err(|e| JsValue::from_str(&e))?;
         
-        let json = serde_json::json!({
-            "files": result.files,
-            "pageCount": result.page_count,
-            "error": result.error,
-        });
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"files".into(), 
+            &serde_wasm_bindgen::to_value(&result.files).unwrap_or(JsValue::NULL))?;
+        js_sys::Reflect::set(&obj, &"pageCount".into(), &JsValue::from(result.page_count as u32))?;
+        js_sys::Reflect::set(&obj, &"error".into(), 
+            &result.error.map(|e| JsValue::from_str(&e)).unwrap_or(JsValue::NULL))?;
         
-        serde_wasm_bindgen::to_value(&json)
-            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+        Ok(obj.into())
     }
 
     /// 获取页数

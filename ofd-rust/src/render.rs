@@ -193,8 +193,9 @@ impl Parser {
 
         // 获取页面尺寸
         let (width, height) = self.get_page_size_from_page(&page);
-        result.width = width;
-        result.height = height;
+        let scale = 3.78; // mm to px
+        result.width = width * scale;
+        result.height = height * scale;
 
         // 加载资源
         self.load_resources();
@@ -228,17 +229,17 @@ impl Parser {
 
         for layer in layers {
             // 提取图片
-            for img in &layer.image_objects {
+            for img in layer.image_objects() {
                 self.extract_image(result, img, scale);
             }
 
             // 提取路径
-            for path_obj in &layer.path_objects {
+            for path_obj in layer.path_objects() {
                 self.extract_path(result, path_obj, scale, result.width, result.height);
             }
 
             // 提取文本
-            for text in &layer.text_objects {
+            for text in layer.text_objects() {
                 self.extract_text(result, text, scale);
             }
         }

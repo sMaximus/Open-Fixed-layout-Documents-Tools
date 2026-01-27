@@ -139,9 +139,42 @@
             // 绘制文本
             if (pageResult.textLayer) {
               for (const text of pageResult.textLayer) {
-                ctx.font = `${text.fontSize}px ${text.fontFamily}`;
-                ctx.fillStyle = text.color;
-                ctx.fillText(text.text, text.x, text.y);
+                ctx.save();
+
+                // 应用 CTM 变换
+                if (text.ctm && text.ctm.length >= 6) {
+                  ctx.transform(
+                    text.ctm[0],
+                    text.ctm[1],
+                    text.ctm[2],
+                    text.ctm[3],
+                    text.x,
+                    text.y,
+                  );
+                  ctx.font = `${text.fontSize}px ${text.fontFamily}`;
+                  ctx.fillStyle = text.color;
+                  if (text.stroke && text.strokeColor) {
+                    ctx.strokeStyle = text.strokeColor;
+                    ctx.lineWidth = text.lineWidth || 1;
+                    ctx.strokeText(text.text, 0, 0);
+                  }
+                  if (text.fill !== false) {
+                    ctx.fillText(text.text, 0, 0);
+                  }
+                } else {
+                  ctx.font = `${text.fontSize}px ${text.fontFamily}`;
+                  ctx.fillStyle = text.color;
+                  if (text.stroke && text.strokeColor) {
+                    ctx.strokeStyle = text.strokeColor;
+                    ctx.lineWidth = text.lineWidth || 1;
+                    ctx.strokeText(text.text, text.x, text.y);
+                  }
+                  if (text.fill !== false) {
+                    ctx.fillText(text.text, text.x, text.y);
+                  }
+                }
+
+                ctx.restore();
               }
             }
 
