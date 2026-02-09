@@ -59,7 +59,6 @@ async function loadOFDFonts() {
     for (const font of embeddedFonts) {
       const fontName = `OFD_Font_${font.id}`;
       if (loadedFonts.has(fontName)) continue;
-
       try {
         const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
         await fontFace.load();

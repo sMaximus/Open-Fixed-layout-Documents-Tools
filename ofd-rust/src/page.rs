@@ -21,6 +21,10 @@ pub struct Page {
 pub struct PageAreaDef {
     #[serde(rename = "PhysicalBox", default)]
     pub physical_box: String,
+    #[serde(rename = "ApplicationBox", default)]
+    pub application_box: String,
+    #[serde(rename = "ContentBox", default)]
+    pub content_box: String,
 }
 
 /// 模板引用

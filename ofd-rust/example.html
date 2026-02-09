@@ -3,190 +3,727 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OFD Rust WASM 示例</title>
+    <title>OFD Rust WASM 查看器</title>
     <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
       body {
-        font-family: sans-serif;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #1a1a2e;
+        color: #fff;
+        min-height: 100vh;
+      }
+      .header {
+        background: #16213e;
+        padding: 15px 20px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        border-bottom: 1px solid #0f3460;
+      }
+      .header h1 {
+        font-size: 18px;
+        font-weight: 500;
+      }
+      .header input[type="file"] {
+        background: #0f3460;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        color: #fff;
+        cursor: pointer;
+      }
+      #status {
+        margin-left: auto;
+        font-size: 14px;
+        color: #94a3b8;
+      }
+      .main {
+        display: flex;
+        height: calc(100vh - 60px);
+      }
+      .sidebar {
+        width: 200px;
+        background: #16213e;
+        border-right: 1px solid #0f3460;
+        overflow-y: auto;
+        padding: 10px;
+      }
+      .sidebar h3 {
+        font-size: 12px;
+        color: #94a3b8;
+        margin-bottom: 10px;
+        text-transform: uppercase;
+      }
+      .info-item {
+        display: flex;
+        justify-content: space-between;
+        padding: 6px 0;
+        font-size: 13px;
+        border-bottom: 1px solid #0f3460;
+      }
+      .info-label {
+        color: #94a3b8;
+      }
+      .info-value {
+        color: #fff;
+      }
+      .page-list {
+        margin-top: 15px;
+      }
+      .page-item {
+        padding: 8px 10px;
+        cursor: pointer;
+        border-radius: 4px;
+        font-size: 13px;
+        margin-bottom: 4px;
+      }
+      .page-item:hover {
+        background: #0f3460;
+      }
+      .page-item.active {
+        background: #e94560;
+      }
+      #viewer {
+        flex: 1;
+        overflow: auto;
         padding: 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 20px;
+        background: #0f0f23;
       }
-      #canvas {
-        border: 1px solid #ccc;
+      .page-container {
+        position: relative;
+        background: #fff;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        border-radius: 4px;
+        overflow: hidden;
+        flex-shrink: 0;
       }
-      #info {
+      .text-layer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        pointer-events: auto;
+      }
+      .text-layer span {
+        position: absolute;
+        white-space: pre;
+        cursor: text;
+        user-select: text;
+      }
+      .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: #94a3b8;
+      }
+      .empty-state p {
         margin: 10px 0;
+      }
+      .loading {
+        animation: pulse 1.5s infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>OFD Rust WASM 查看器</h1>
-    <input type="file" id="fileInput" accept=".ofd" />
-    <div id="info"></div>
-    <canvas id="canvas"></canvas>
+    <div class="header">
+      <h1>OFD Rust WASM 查看器</h1>
+      <input type="file" id="fileInput" accept=".ofd" />
+      <span id="status">⏳ 加载中...</span>
+    </div>
+    <div class="main">
+      <div class="sidebar">
+        <h3>文档信息</h3>
+        <div id="docInfo"></div>
+        <h3 style="margin-top: 15px">页面列表</h3>
+        <div id="pageList" class="page-list"></div>
+      </div>
+      <div id="viewer">
+        <div class="empty-state">
+          <p>📄 请选择 OFD 文件</p>
+          <p style="font-size: 12px">支持拖放文件</p>
+        </div>
+      </div>
+    </div>
 
     <script type="module">
       import init, { OFDParser } from "./pkg/ofd_rust.js";
 
-      async function main() {
-        await init();
+      let parser = null;
+      let currentPageCount = 0;
+      const scale = 3.78;
+      const loadedFonts = new Map();
+      let allPagesData = [];
+      const renderedPages = new Set();
+      const INITIAL_PAGES = 3;
 
-        const fileInput = document.getElementById("fileInput");
-        const canvas = document.getElementById("canvas");
-        const ctx = canvas.getContext("2d");
-        const info = document.getElementById("info");
+      function updateStatus(msg) {
+        document.getElementById("status").textContent = msg;
+      }
 
-        fileInput.addEventListener("change", async (e) => {
-          const file = e.target.files[0];
-          if (!file) return;
+      function infoItem(label, value) {
+        return `<div class="info-item"><span class="info-label">${label}</span><span class="info-value">${value}</span></div>`;
+      }
 
+      function displayDocInfo(result) {
+        const container = document.getElementById("docInfo");
+        let html = "";
+        html += infoItem("页数", result.pageCount || 0);
+        html += infoItem("文件数", result.files ? result.files.length : 0);
+        container.innerHTML = html;
+      }
+
+      function displayPageList(count) {
+        const container = document.getElementById("pageList");
+        let html = "";
+        for (let i = 0; i < count; i++) {
+          html += `<div class="page-item" data-page="${i}">第 ${i + 1} 页</div>`;
+        }
+        container.innerHTML =
+          html || '<div style="color:#666;font-size:13px;">无页面</div>';
+
+        container.querySelectorAll(".page-item").forEach((item) => {
+          item.addEventListener("click", () => {
+            const pageIndex = parseInt(item.dataset.page);
+            scrollToPage(pageIndex);
+          });
+        });
+      }
+
+      function scrollToPage(index) {
+        const page = document.getElementById(`page-${index}`);
+        if (page) {
+          page.scrollIntoView({ behavior: "smooth", block: "start" });
+          document.querySelectorAll(".page-item").forEach((item, i) => {
+            item.classList.toggle("active", i === index);
+          });
+        }
+      }
+
+      async function loadOFDFonts() {
+        try {
+          const fonts = parser.get_fonts();
+          if (!fonts || fonts.length === 0) return;
+
+          const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataURL);
+          console.log(
+            `发现 ${fonts.length} 个字体声明，${embeddedFonts.length} 个有嵌入文件`,
+          );
+
+          for (const font of embeddedFonts) {
+            const fontName = `OFD_Font_${font.id}`;
+            if (loadedFonts.has(fontName)) continue;
+
+            try {
+              const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
+              await fontFace.load();
+              document.fonts.add(fontFace);
+              loadedFonts.set(fontName, fontFace);
+              console.log(`字体加载成功: ${fontName}`);
+            } catch (err) {
+              console.warn(`字体加载失败: ${fontName}`, err);
+            }
+          }
+        } catch (err) {
+          console.warn("加载字体出错:", err);
+        }
+      }
+
+      async function parseAndRender(file) {
+        updateStatus("⏳ 解析中...");
+        const viewer = document.getElementById("viewer");
+        viewer.innerHTML =
+          '<div class="empty-state loading"><p>⏳ 正在解析文档...</p></div>';
+
+        try {
           const arrayBuffer = await file.arrayBuffer();
           const data = new Uint8Array(arrayBuffer);
 
-          try {
-            console.log("Creating parser with data size:", data.length);
-            const parser = new OFDParser(data);
-            console.log("Parser created successfully");
+          parser = new OFDParser(data);
+          const result = parser.parse();
+          console.log("Parse result:", result);
 
-            const result = parser.parse();
-            console.log("Parse result:", result);
+          if (result.error) throw new Error(result.error);
 
-            const pageCount = result.pageCount || 0;
-            const filesCount = result.files ? result.files.length : 0;
+          currentPageCount = result.pageCount || 0;
+          displayDocInfo(result);
+          displayPageList(currentPageCount);
 
-            if (result.error) {
-              info.textContent = `错误: ${result.error}`;
-              return;
-            }
+          updateStatus("⏳ 加载字体...");
+          await loadOFDFonts();
 
-            info.textContent = `页数: ${pageCount}, 文件数: ${filesCount}`;
+          updateStatus("⏳ 渲染页面...");
+          await renderAllPages();
 
-            if (pageCount === 0) {
-              info.textContent += " - 无法解析文档";
-              if (filesCount > 0) {
-                info.textContent += ` (找到 ${filesCount} 个文件)`;
-              }
-              return;
-            }
+          updateStatus(`✅ 已加载 ${currentPageCount} 页`);
+        } catch (err) {
+          updateStatus("❌ " + err.message);
+          viewer.innerHTML = `<div class="empty-state"><p>❌ 解析失败</p><p style="font-size:12px;">${err.message}</p></div>`;
+          console.error(err);
+        }
+      }
 
-            // 渲染第一页
-            const pageResult = parser.render_page(0);
-            console.log("Render result:", pageResult);
+      async function renderAllPages() {
+        const viewer = document.getElementById("viewer");
+        const pageCount = parser.get_page_count();
 
-            if (pageResult.error) {
-              info.textContent += ` 错误: ${pageResult.error}`;
-              return;
-            }
+        if (pageCount <= 0) {
+          viewer.innerHTML = `<div class="empty-state"><p>❌ 无法获取页数</p></div>`;
+          return;
+        }
 
-            canvas.width = pageResult.width;
-            canvas.height = pageResult.height;
+        allPagesData = new Array(pageCount).fill(null);
+        renderedPages.clear();
+        viewer.innerHTML = "";
 
-            // 白色背景
-            ctx.fillStyle = "white";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const initialCount = Math.min(INITIAL_PAGES, pageCount);
 
-            // 绘制路径
-            if (pageResult.canvasData && pageResult.canvasData.paths) {
-              for (const path of pageResult.canvasData.paths) {
-                const commands = JSON.parse(path.commands);
-                ctx.beginPath();
-                for (const cmd of commands) {
-                  switch (cmd.cmd) {
-                    case "M":
-                      ctx.moveTo(cmd.x, cmd.y);
-                      break;
-                    case "L":
-                      ctx.lineTo(cmd.x, cmd.y);
-                      break;
-                    case "C":
-                      ctx.bezierCurveTo(
-                        cmd.x1,
-                        cmd.y1,
-                        cmd.x2,
-                        cmd.y2,
-                        cmd.x,
-                        cmd.y,
-                      );
-                      break;
-                    case "Q":
-                      ctx.quadraticCurveTo(cmd.x1, cmd.y1, cmd.x, cmd.y);
-                      break;
-                    case "Z":
-                      ctx.closePath();
-                      break;
-                  }
+        for (let i = 0; i < initialCount; i++) {
+          const page = parser.render_page(i);
+          allPagesData[i] = page;
+          console.log(
+            `页面${i + 1}: width=${page.width}, height=${page.height}, 路径=${page.canvasData?.paths?.length || 0}, 图片=${page.canvasData?.images?.length || 0}, 文字=${page.textLayer?.length || 0}, error=${page.error || "none"}`,
+          );
+        }
+
+        for (let i = 0; i < pageCount; i++) {
+          const pageContainer = document.createElement("div");
+          pageContainer.id = `page-${i}`;
+          pageContainer.className = "page-container";
+          pageContainer.dataset.pageIndex = i;
+
+          let pxWidth, pxHeight;
+          if (allPagesData[i]) {
+            pxWidth = allPagesData[i].width;
+            pxHeight = allPagesData[i].height;
+          } else {
+            pxWidth = 210 * scale;
+            pxHeight = 297 * scale;
+          }
+
+          pageContainer.style.cssText = `
+            width: ${pxWidth}px;
+            height: ${pxHeight}px;
+            position: relative;
+            background: #f5f5f5;
+            flex-shrink: 0;
+          `;
+
+          if (i >= initialCount) {
+            const placeholder = document.createElement("div");
+            placeholder.style.cssText = `
+              position: absolute;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              color: #999;
+              font-size: 14px;
+            `;
+            placeholder.textContent = `第 ${i + 1} 页 (滚动加载)`;
+            pageContainer.appendChild(placeholder);
+          }
+
+          viewer.appendChild(pageContainer);
+        }
+
+        for (let i = 0; i < initialCount; i++) {
+          await renderPageContent(i);
+        }
+
+        setupScrollListener();
+      }
+
+      async function renderPageContent(pageIndex) {
+        if (renderedPages.has(pageIndex)) return;
+
+        const page = allPagesData[pageIndex];
+        if (!page) return;
+
+        const pageContainer = document.getElementById(`page-${pageIndex}`);
+        if (!pageContainer) return;
+
+        renderedPages.add(pageIndex);
+
+        if (page.error) {
+          pageContainer.innerHTML = `<div style="color:red;padding:20px;">页面 ${pageIndex + 1} 渲染失败: ${page.error}</div>`;
+          return;
+        }
+
+        const pxWidth = page.width;
+        const pxHeight = page.height;
+
+        pageContainer.innerHTML = "";
+        pageContainer.style.background = "#fff";
+        pageContainer.style.width = `${pxWidth}px`;
+        pageContainer.style.height = `${pxHeight}px`;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = pxWidth;
+        canvas.height = pxHeight;
+        canvas.style.cssText = `position: absolute; left: 0; top: 0; z-index: 0;`;
+        pageContainer.appendChild(canvas);
+
+        const textLayer = document.createElement("div");
+        textLayer.className = "text-layer";
+        textLayer.style.cssText = `
+          position: absolute; left: 0; top: 0;
+          width: 100%; height: 100%;
+          z-index: 1; overflow: hidden; pointer-events: auto;
+        `;
+        pageContainer.appendChild(textLayer);
+
+        await renderCanvasLayer(canvas, page.canvasData, page.textLayer);
+        renderTransparentTextLayer(textLayer, page.textLayer);
+      }
+
+      function setupScrollListener() {
+        const viewer = document.getElementById("viewer");
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) {
+                const pageIndex = parseInt(entry.target.dataset.pageIndex, 10);
+                if (!isNaN(pageIndex) && !renderedPages.has(pageIndex)) {
+                  loadAndRenderPage(pageIndex);
                 }
-                if (path.fillColor) {
-                  ctx.fillStyle = path.fillColor;
-                  ctx.fill();
-                }
-                if (path.strokeColor) {
-                  ctx.strokeStyle = path.strokeColor;
-                  ctx.lineWidth = path.lineWidth;
-                  ctx.stroke();
-                }
               }
-            }
+            });
+          },
+          { root: viewer, rootMargin: "200px", threshold: 0 },
+        );
 
-            // 绘制图片
-            if (pageResult.canvasData && pageResult.canvasData.images) {
-              for (const img of pageResult.canvasData.images) {
-                const image = new Image();
-                image.src = img.dataURL;
-                await new Promise((resolve) => (image.onload = resolve));
-                ctx.drawImage(image, img.x, img.y, img.width, img.height);
+        document.querySelectorAll(".page-container").forEach((container) => {
+          observer.observe(container);
+        });
+      }
+
+      async function loadAndRenderPage(pageIndex) {
+        if (renderedPages.has(pageIndex)) return;
+        if (allPagesData[pageIndex]) {
+          await renderPageContent(pageIndex);
+          return;
+        }
+
+        try {
+          const page = parser.render_page(pageIndex);
+          allPagesData[pageIndex] = page;
+          await renderPageContent(pageIndex);
+        } catch (err) {
+          console.error(`加载页面 ${pageIndex + 1} 失败:`, err);
+        }
+      }
+
+      async function renderCanvasLayer(canvas, canvasData, textLayer) {
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (!canvasData) canvasData = {};
+
+        if (canvasData.paths) {
+          for (const pathData of canvasData.paths) {
+            await drawPath(ctx, pathData);
+          }
+        }
+
+        if (canvasData.images && canvasData.images.length > 0) {
+          for (const img of canvasData.images) {
+            await drawImage(ctx, img);
+          }
+        }
+
+        if (textLayer && textLayer.length > 0) {
+          for (const item of textLayer) {
+            drawText(ctx, item);
+          }
+        }
+      }
+
+      function drawText(ctx, item) {
+        ctx.save();
+        ctx.font = `${item.fontSize}px ${item.fontFamily}`;
+        ctx.textBaseline = "alphabetic";
+
+        if (item.ctm && item.ctm.length >= 4) {
+          const [a, b, c, d, e, f] = item.ctm;
+          ctx.translate(item.x, item.y);
+          ctx.transform(a, b, c, d, e || 0, f || 0);
+
+          if (item.fill !== false) {
+            ctx.fillStyle = item.color || "#000";
+            ctx.fillText(item.text, 0, 0);
+          }
+          if (item.stroke && item.strokeColor) {
+            ctx.strokeStyle = item.strokeColor;
+            ctx.lineWidth = (item.lineWidth || 1) / (a || 1);
+            ctx.strokeText(item.text, 0, 0);
+          }
+        } else {
+          if (item.fill !== false) {
+            ctx.fillStyle = item.color || "#000";
+            ctx.fillText(item.text, item.x, item.y);
+          }
+          if (item.stroke && item.strokeColor) {
+            ctx.strokeStyle = item.strokeColor;
+            ctx.lineWidth = item.lineWidth || 1;
+            ctx.strokeText(item.text, item.x, item.y);
+          }
+        }
+
+        ctx.restore();
+      }
+
+      function drawImage(ctx, imgData) {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            ctx.save();
+            if (imgData.ctm && imgData.ctm.length >= 4) {
+              const [a, b, c, d, e, f] = imgData.ctm;
+              ctx.translate(imgData.x, imgData.y);
+              ctx.transform(a, b, c, d, e || 0, f || 0);
+              ctx.drawImage(img, 0, 0, 1, 1);
+            } else {
+              ctx.drawImage(
+                img,
+                imgData.x,
+                imgData.y,
+                imgData.width,
+                imgData.height,
+              );
+            }
+            ctx.restore();
+            resolve();
+          };
+          img.onerror = () => resolve();
+          img.src = imgData.dataURL;
+        });
+      }
+
+      async function drawPath(ctx, pathData) {
+        try {
+          const commands = JSON.parse(pathData.commands);
+          if (!commands || commands.length === 0) return;
+
+          ctx.save();
+          ctx.beginPath();
+
+          for (const cmd of commands) {
+            switch (cmd.cmd) {
+              case "M":
+                ctx.moveTo(cmd.x, cmd.y);
+                break;
+              case "L":
+                ctx.lineTo(cmd.x, cmd.y);
+                break;
+              case "C":
+                ctx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y);
+                break;
+              case "Q":
+                ctx.quadraticCurveTo(cmd.x1, cmd.y1, cmd.x, cmd.y);
+                break;
+              case "Z":
+                ctx.closePath();
+                break;
+            }
+          }
+
+          if (pathData.pattern) {
+            const pattern = await createPatternFill(ctx, pathData.pattern);
+            if (pattern) {
+              ctx.fillStyle = pattern;
+              ctx.fill();
+            }
+          } else if (pathData.gradient) {
+            let gradient;
+            if (pathData.gradient.type === "linear") {
+              gradient = ctx.createLinearGradient(
+                pathData.gradient.x0,
+                pathData.gradient.y0,
+                pathData.gradient.x1,
+                pathData.gradient.y1,
+              );
+            } else if (pathData.gradient.type === "radial") {
+              gradient = ctx.createRadialGradient(
+                pathData.gradient.x0,
+                pathData.gradient.y0,
+                pathData.gradient.r0 || 0,
+                pathData.gradient.x1,
+                pathData.gradient.y1,
+                pathData.gradient.r1 || 0,
+              );
+            }
+            if (gradient && pathData.gradient.stops) {
+              for (const stop of pathData.gradient.stops) {
+                gradient.addColorStop(stop.position, stop.color);
               }
+              ctx.fillStyle = gradient;
+              ctx.fill();
             }
+          } else if (pathData.fillColor) {
+            ctx.fillStyle = pathData.fillColor;
+            ctx.fill();
+          }
 
-            // 绘制文本
-            if (pageResult.textLayer) {
-              for (const text of pageResult.textLayer) {
-                ctx.save();
+          if (pathData.strokeColor) {
+            ctx.strokeStyle = pathData.strokeColor;
+            ctx.lineWidth = pathData.lineWidth || 1;
+            ctx.lineJoin = pathData.lineJoin || "miter";
+            ctx.lineCap = pathData.lineCap || "butt";
+            ctx.stroke();
+          }
 
-                // 应用 CTM 变换
-                if (text.ctm && text.ctm.length >= 6) {
-                  ctx.transform(
-                    text.ctm[0],
-                    text.ctm[1],
-                    text.ctm[2],
-                    text.ctm[3],
-                    text.x,
-                    text.y,
-                  );
-                  ctx.font = `${text.fontSize}px ${text.fontFamily}`;
-                  ctx.fillStyle = text.color;
-                  if (text.stroke && text.strokeColor) {
-                    ctx.strokeStyle = text.strokeColor;
-                    ctx.lineWidth = text.lineWidth || 1;
-                    ctx.strokeText(text.text, 0, 0);
-                  }
-                  if (text.fill !== false) {
-                    ctx.fillText(text.text, 0, 0);
-                  }
-                } else {
-                  ctx.font = `${text.fontSize}px ${text.fontFamily}`;
-                  ctx.fillStyle = text.color;
-                  if (text.stroke && text.strokeColor) {
-                    ctx.strokeStyle = text.strokeColor;
-                    ctx.lineWidth = text.lineWidth || 1;
-                    ctx.strokeText(text.text, text.x, text.y);
-                  }
-                  if (text.fill !== false) {
-                    ctx.fillText(text.text, text.x, text.y);
-                  }
-                }
+          ctx.restore();
+        } catch (e) {
+          console.warn("Path render error:", e);
+        }
+      }
 
-                ctx.restore();
-              }
-            }
+      async function createPatternFill(ctx, patternData) {
+        if (!patternData || patternData.xStep <= 0 || patternData.yStep <= 0)
+          return null;
 
-            info.textContent += " - 渲染完成";
-          } catch (err) {
-            console.error("Error:", err);
-            info.textContent = `错误: ${err.message || err}`;
+        const mmToPx = 3.78;
+        let ctmScaleX = 1,
+          ctmScaleY = 1,
+          ctmE_mm = 0,
+          ctmF_mm = 0;
+
+        if (patternData.ctm && patternData.ctm.length >= 4) {
+          ctmScaleX = patternData.ctm[0];
+          ctmScaleY = patternData.ctm[3];
+          if (patternData.ctm.length >= 6) {
+            ctmE_mm = patternData.ctm[4];
+            ctmF_mm = patternData.ctm[5];
+          }
+        }
+
+        const ctmE_px = ctmE_mm * mmToPx;
+        const ctmF_px = ctmF_mm * mmToPx;
+        const patternWidth = Math.ceil(patternData.xStep * mmToPx * ctmScaleX);
+        const patternHeight = Math.ceil(patternData.yStep * mmToPx * ctmScaleY);
+
+        const offscreenCanvas = document.createElement("canvas");
+        offscreenCanvas.width = patternWidth;
+        offscreenCanvas.height = patternHeight;
+        const offCtx = offscreenCanvas.getContext("2d");
+
+        const combinedScaleX = mmToPx * ctmScaleX;
+        const combinedScaleY = mmToPx * ctmScaleY;
+
+        if (patternData.cellImages && patternData.cellImages.length > 0) {
+          for (const cellImg of patternData.cellImages) {
+            await new Promise((resolve) => {
+              const img = new Image();
+              img.onload = () => {
+                offCtx.drawImage(
+                  img,
+                  cellImg.x * combinedScaleX,
+                  cellImg.y * combinedScaleY,
+                  cellImg.width * combinedScaleX,
+                  cellImg.height * combinedScaleY,
+                );
+                resolve();
+              };
+              img.onerror = resolve;
+              img.src = cellImg.dataURL;
+            });
+          }
+        }
+
+        const pattern = ctx.createPattern(offscreenCanvas, "repeat");
+        if (pattern) {
+          const matrix = new DOMMatrix();
+          matrix.translateSelf(ctmE_px, ctmF_px);
+          pattern.setTransform(matrix);
+        }
+        return pattern;
+      }
+
+      function renderTransparentTextLayer(container, textItems) {
+        if (!textItems || textItems.length === 0) return;
+
+        for (const item of textItems) {
+          if (item.text === "__PLACEHOLDER__") continue;
+
+          const span = document.createElement("span");
+          span.textContent = item.text;
+
+          let transform = "";
+          if (item.ctm && item.ctm.length >= 4) {
+            const [a, b, c, d, e, f] = item.ctm;
+            transform = `transform: matrix(${a}, ${b}, ${c}, ${d}, ${e || 0}, ${f || 0}); transform-origin: left top;`;
+          }
+
+          span.style.cssText = `
+            position: absolute;
+            left: ${item.x}px;
+            top: ${item.y - item.fontSize * 0.8}px;
+            font-family: ${item.fontFamily};
+            font-size: ${item.fontSize}px;
+            color: transparent;
+            white-space: pre;
+            line-height: 1;
+            cursor: text;
+            user-select: text;
+            ${transform}
+          `;
+
+          container.appendChild(span);
+        }
+      }
+
+      // 初始化
+      async function main() {
+        await init();
+        updateStatus("✅ 就绪");
+
+        const fileInput = document.getElementById("fileInput");
+        fileInput.addEventListener("change", (e) => {
+          const file = e.target.files[0];
+          if (file) parseAndRender(file);
+        });
+
+        document.body.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+
+        document.body.addEventListener("drop", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const file = e.dataTransfer.files[0];
+          if (file && file.name.toLowerCase().endsWith(".ofd")) {
+            parseAndRender(file);
           }
         });
       }
 
-      main();
+      main().catch((err) => {
+        updateStatus("❌ WASM 加载失败");
+        console.error(err);
+      });
     </script>
   </body>
 </html>

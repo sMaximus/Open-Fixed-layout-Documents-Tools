@@ -110,6 +110,12 @@ impl Parser {
                     
                     if let Some(ref doc) = self.document {
                         result.page_count = doc.pages.page.len();
+                        // 调试输出
+                        web_sys::console::log_1(&format!(
+                            "Document parsed: page_count={}, physical_box='{}'",
+                            doc.pages.page.len(),
+                            doc.common_data.page_area.physical_box
+                        ).into());
                     }
                     result.document = self.document.clone();
                 } else {
@@ -377,10 +383,17 @@ impl Parser {
 /// 解析边界框
 pub fn parse_box(box_str: &str) -> (f64, f64) {
     let mut scanner = NumberScanner::new(box_str);
-    scanner.next_float(); // skip x
-    scanner.next_float(); // skip y
+    let x = scanner.next_float(); // skip x
+    let y = scanner.next_float(); // skip y
     let w = scanner.next_float().unwrap_or(0.0);
     let h = scanner.next_float().unwrap_or(0.0);
+    
+    // 调试输出
+    web_sys::console::log_1(&format!(
+        "parse_box: input='{}', x={:?}, y={:?}, w={}, h={}",
+        box_str, x, y, w, h
+    ).into());
+    
     if w == 0.0 && h == 0.0 {
         return (210.0, 297.0);
     }

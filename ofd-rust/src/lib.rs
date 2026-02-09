@@ -63,7 +63,25 @@ impl OFDParser {
     /// 渲染页面
     pub fn render_page(&mut self, index: usize) -> JsValue {
         let result = self.parser.render_page(index);
-        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+        
+        // 调试输出
+        web_sys::console::log_1(&format!("Rust render_page: index={}, width={}, height={}", 
+            result.page_index, result.width, result.height).into());
+        
+        // 手动构建 JS 对象以确保正确的属性名
+        let obj = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&obj, &"pageIndex".into(), &JsValue::from(result.page_index as u32));
+        let _ = js_sys::Reflect::set(&obj, &"width".into(), &JsValue::from(result.width));
+        let _ = js_sys::Reflect::set(&obj, &"height".into(), &JsValue::from(result.height));
+        let _ = js_sys::Reflect::set(&obj, &"canvasData".into(), 
+            &serde_wasm_bindgen::to_value(&result.canvas_data).unwrap_or(JsValue::NULL));
+        let _ = js_sys::Reflect::set(&obj, &"textLayer".into(), 
+            &serde_wasm_bindgen::to_value(&result.text_layer).unwrap_or(JsValue::NULL));
+        if let Some(err) = result.error {
+            let _ = js_sys::Reflect::set(&obj, &"error".into(), &JsValue::from_str(&err));
+        }
+        
+        obj.into()
     }
 
     /// 获取字体信息

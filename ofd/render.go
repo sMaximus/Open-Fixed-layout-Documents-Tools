@@ -189,8 +189,8 @@ func removeNamespacePrefix(xmlStr string) string {
 }
 
 // getPageSize 获取页面尺寸
-func (p *Parser) getPageSize(page *Page) (float64, float64) {
-	if page.Area.PhysicalBox != "" {
+func (p *Parser) getPageSize(page *Page) (float64, float64) { 
+	if page.Area.  != "" {
 		return parseBox(page.Area.PhysicalBox)
 	}
 	if p.document != nil && p.document.CommonData.PageArea.PhysicalBox != "" {
@@ -211,9 +211,9 @@ func parseBox(box string) (float64, float64) {
 	return w, h
 }
 
-// loadResources 加载资源（优化版：只加载字体声明，不加载字体文件）
+// loadResources 加载资源（优化版：只加载字体声明，不加载字体文件） 
 func (p *Parser) loadResources() {
-	if p.fonts != nil {
+	if p.`fonts` != nil {
 		return
 	}
 

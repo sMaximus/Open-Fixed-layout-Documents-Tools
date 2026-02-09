@@ -193,6 +193,15 @@ impl Parser {
 
         // 获取页面尺寸
         let (width, height) = self.get_page_size_from_page(&page);
+        
+        // 调试：输出页面尺寸信息
+        web_sys::console::log_1(&format!(
+            "Page size: page.area.physical_box='{}', doc.page_area.physical_box='{}', result=({}, {})",
+            page.area.physical_box,
+            self.document.as_ref().map(|d| d.common_data.page_area.physical_box.as_str()).unwrap_or("N/A"),
+            width, height
+        ).into());
+        
         let scale = 3.78; // mm to px
         result.width = width * scale;
         result.height = height * scale;
@@ -208,14 +217,23 @@ impl Parser {
     }
 
     fn get_page_size_from_page(&self, page: &Page) -> (f64, f64) {
+        // 首先尝试从页面的 Area 获取
         if !page.area.physical_box.is_empty() {
-            return parse_box(&page.area.physical_box);
-        }
-        if let Some(ref doc) = self.document {
-            if !doc.common_data.page_area.physical_box.is_empty() {
-                return parse_box(&doc.common_data.page_area.physical_box);
+            let (w, h) = parse_box(&page.area.physical_box);
+            if w > 0.0 && h > 0.0 {
+                return (w, h);
             }
         }
+        // 然后尝试从文档的 CommonData 获取
+        if let Some(ref doc) = self.document {
+            if !doc.common_data.page_area.physical_box.is_empty() {
+                let (w, h) = parse_box(&doc.common_data.page_area.physical_box);
+                if w > 0.0 && h > 0.0 {
+                    return (w, h);
+                }
+            }
+        }
+        // 默认 A4 尺寸
         (210.0, 297.0)
     }
 
