@@ -441,11 +441,16 @@ async function renderCanvasLayer(canvas, canvasData, textLayer) {
 }
 
 // Canvas 绘制文字
+// 优化：将 fontSize 缩小 10 倍，transform 放大 10 倍
+// 这样可以避免大字号下的子像素舍入误差，提升文字渲染精度
 function drawText(ctx, item) {
   ctx.save();
 
+  const TEXT_SCALE = 10; // 缩放因子
+  const renderFontSize = item.fontSize / TEXT_SCALE;
   let fontFamily = item.fontFamily;
-  ctx.font = `${item.fontSize}px ${fontFamily}`;
+  ctx.font = `${renderFontSize}px ${fontFamily}`;
+
   ctx.textBaseline = "top";
 
   // OFD 坐标系统：
@@ -469,7 +474,15 @@ function drawText(ctx, item) {
     const [a, b, c, d, e, f] = item.ctm;
     // 先平移到文字位置，再应用 CTM 变换
     ctx.translate(item.x, topY);
-    ctx.transform(a, b, c, d, e || 0, f || 0);
+    // 将 CTM 的缩放因子放大 TEXT_SCALE 倍，补偿 fontSize 的缩小
+    ctx.transform(
+      a * TEXT_SCALE,
+      b * TEXT_SCALE,
+      c * TEXT_SCALE,
+      d * TEXT_SCALE,
+      e || 0,
+      f || 0,
+    );
 
     // 处理填充 - 后端已经计算好 fill 值
     if (item.fill) {
@@ -480,24 +493,26 @@ function drawText(ctx, item) {
     // 处理描边
     if (item.stroke && item.strokeColor) {
       ctx.strokeStyle = item.strokeColor;
-      ctx.lineWidth = item.lineWidth / a || 1;
+      ctx.lineWidth = item.lineWidth / (a * TEXT_SCALE) || 1;
       ctx.strokeText(item.text, 0, 0);
     }
   } else {
-    // 没有 CTM，直接绘制
+    // 没有 CTM，直接绘制：用 scale 放大 TEXT_SCALE 倍来补偿
+    ctx.translate(item.x, topY);
+    ctx.scale(TEXT_SCALE, TEXT_SCALE);
     if (item.fill) {
       ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, item.x, topY);
+      ctx.fillText(item.text, 0, 0);
     }
     if (item.stroke && item.strokeColor) {
       ctx.strokeStyle = item.strokeColor;
-      ctx.lineWidth = item.lineWidth || 1;
-      ctx.strokeText(item.text, item.x, topY);
+      ctx.lineWidth = (item.lineWidth || 1) / TEXT_SCALE;
+      ctx.strokeText(item.text, 0, 0);
     }
     // 如果既没有 fill 也没有 stroke，默认填充
     if (!item.fill && !item.stroke) {
       ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, item.x, topY);
+      ctx.fillText(item.text, 0, 0);
     }
   }
 
@@ -956,11 +971,17 @@ function renderTransparentTextLayer(container, textItems) {
     const span = document.createElement("span");
     span.textContent = item.text;
 
-    // 计算 CTM 变换
+    const TEXT_SCALE = 10; // 与 Canvas 层保持一致的缩放因子
+    const renderFontSize = item.fontSize / TEXT_SCALE;
+
+    // 计算 CTM 变换：缩放因子放大 TEXT_SCALE 倍，补偿 fontSize 的缩小
     let transform = "";
     if (item.ctm && item.ctm.length >= 4) {
       const [a, b, c, d, e, f] = item.ctm;
-      transform = `transform: matrix(${a}, ${b}, ${c}, ${d}, ${e || 0}, ${f || 0}); transform-origin: left top;`;
+      transform = `transform: matrix(${a * TEXT_SCALE}, ${b * TEXT_SCALE}, ${c * TEXT_SCALE}, ${d * TEXT_SCALE}, ${e || 0}, ${f || 0}); transform-origin: left top;`;
+    } else {
+      // 没有 CTM 时，用 scale 放大 TEXT_SCALE 倍来补偿
+      transform = `transform: scale(${TEXT_SCALE}); transform-origin: left top;`;
     }
 
     // OFD 坐标系统：使用 Boundary Y 作为统一的顶部参考点
@@ -975,14 +996,14 @@ function renderTransparentTextLayer(container, textItems) {
 
     // 关键样式：
     // - color: transparent 让文字透明（用户看不见）
-    // - 字号、字体、位置与 Canvas 完全一致
+    // - 字号缩小 10 倍，transform 放大 10 倍，与 Canvas 层一致
     // - user-select: text 允许选择
     span.style.cssText = `
       position: absolute;
       left: ${item.x}px;
       top: ${topPos}px;
       font-family: ${item.fontFamily};
-      font-size: ${item.fontSize}px;
+      font-size: ${renderFontSize}px;
       color: transparent;
       white-space: pre;
       line-height: 1;
