@@ -28,7 +28,7 @@ function updateStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
-// 加载 OFD 嵌入字体（优化版：快速跳过无嵌入字体的情况）
+// 加载 OFD 字体信息（触发后端 freetype 解析，文字由后端光栅化）
 async function loadOFDFonts() {
   try {
     const startTime = performance.now();
@@ -43,34 +43,10 @@ async function loadOFDFonts() {
       return;
     }
 
-    // 快速统计有嵌入文件的字体数量
-    const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataURL);
+    const rasterizedCount = fonts.filter((f) => f.needRasterize).length;
     console.log(
-      `发现 ${fonts.length} 个字体声明，${embeddedFonts.length} 个有嵌入文件`,
+      `发现 ${fonts.length} 个字体声明，${rasterizedCount} 个使用后端光栅化`,
     );
-
-    // 如果没有嵌入字体，直接返回
-    if (embeddedFonts.length === 0) {
-      console.log("无嵌入字体，将使用系统字体");
-      return;
-    }
-
-    // 只加载有嵌入文件的字体
-    for (const font of embeddedFonts) {
-      const fontName = `OFD_Font_${font.id}`;
-      if (loadedFonts.has(fontName)) continue;
-      try {
-        const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
-        await fontFace.load();
-        document.fonts.add(fontFace);
-        loadedFonts.set(fontName, fontFace);
-        console.log(`字体加载成功: ${fontName} (${font.fontName})`);
-      } catch (err) {
-        console.warn(`字体加载失败: ${fontName}`, err);
-      }
-    }
-
-    console.log(`已加载 ${loadedFonts.size} 个字体`);
   } catch (err) {
     console.warn("加载字体出错:", err);
   }
@@ -403,7 +379,7 @@ async function loadAndRenderPage(pageIndex) {
 }
 
 // ============ 底层 Canvas 渲染 ============
-// 渲染顺序：背景 → 路径 → 文字 → 图片（印章在最上层）
+// 渲染顺序：背景 → 路径 → 图片（包含后端光栅化的文字图片和印章）
 
 async function renderCanvasLayer(canvas, canvasData, textLayer) {
   const ctx = canvas.getContext("2d");
@@ -414,106 +390,61 @@ async function renderCanvasLayer(canvas, canvasData, textLayer) {
 
   if (!canvasData) canvasData = {};
 
-  // 2. 渲染路径（矢量图形、线条）- 需要 await 因为 Pattern 是异步的
+  // 2. 渲染路径（矢量图形、线条）
   if (canvasData.paths) {
     for (const pathData of canvasData.paths) {
       await drawPath(ctx, pathData);
     }
   }
 
-  // 4. 渲染图片（印章等，最上层）
+  // 3. 渲染图片（包含后端光栅化的文字图片、普通图片、印章等）
   if (canvasData.images && canvasData.images.length > 0) {
-    console.log(`渲染 ${canvasData.images.length} 个图片/印章`);
+    console.log(`渲染 ${canvasData.images.length} 个图片`);
     for (const img of canvasData.images) {
-      console.log(
-        `图片: x=${img.x}, y=${img.y}, w=${img.width}, h=${img.height}`,
-      );
       await drawImage(ctx, img);
     }
   }
 
-  // 3. 渲染文字
+  // 4. 渲染未光栅化的文字（没有嵌入字体的文字，仍需前端渲染）
   if (textLayer && textLayer.length > 0) {
     for (const item of textLayer) {
-      drawText(ctx, item);
+      if (item.color && item.color !== "transparent") {
+        drawText(ctx, item);
+      }
     }
   }
 }
 
-// Canvas 绘制文字
-// 优化：将 fontSize 缩小 10 倍，transform 放大 10 倍
-// 这样可以避免大字号下的子像素舍入误差，提升文字渲染精度
+// Canvas 绘制文字（用于没有嵌入字体的文字回退渲染）
 function drawText(ctx, item) {
   ctx.save();
-
-  const TEXT_SCALE = 10; // 缩放因子
-  const renderFontSize = item.fontSize / TEXT_SCALE;
-  let fontFamily = item.fontFamily;
-  ctx.font = `${renderFontSize}px ${fontFamily}`;
-
+  ctx.font = `${item.fontSize}px ${item.fontFamily}`;
   ctx.textBaseline = "top";
 
-  // OFD 坐标系统：
-  // - item.boundaryY 是 Boundary 的顶部位置
-  // - item.textCodeY 是相对于 Boundary 顶部的基线偏移
-  // 不同字体的 textCodeY 不同，这是为了让不同字体对齐
-  // 我们应该使用 boundaryY 作为统一的顶部参考点
-
   let topY;
-  if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
-    // 使用 Boundary Y 作为顶部参考点
+  if (item.boundaryY !== undefined) {
     topY = item.boundaryY;
   } else {
-    // 兼容旧版本：使用固定比例
-    const baselineOffset = item.fontSize * 0.8;
-    topY = item.y - baselineOffset;
+    topY = item.y - item.fontSize * 0.8;
   }
 
-  // 应用 CTM 变换矩阵
   if (item.ctm && item.ctm.length >= 4) {
     const [a, b, c, d, e, f] = item.ctm;
-    // 先平移到文字位置，再应用 CTM 变换
     ctx.translate(item.x, topY);
-    // 将 CTM 的缩放因子放大 TEXT_SCALE 倍，补偿 fontSize 的缩小
-    ctx.transform(
-      a * TEXT_SCALE,
-      b * TEXT_SCALE,
-      c * TEXT_SCALE,
-      d * TEXT_SCALE,
-      e || 0,
-      f || 0,
-    );
+    ctx.transform(a, b, c, d, e || 0, f || 0);
 
-    // 处理填充 - 后端已经计算好 fill 值
-    if (item.fill) {
+    if (item.fill !== false) {
       ctx.fillStyle = item.color || "#000";
       ctx.fillText(item.text, 0, 0);
     }
-
-    // 处理描边
     if (item.stroke && item.strokeColor) {
       ctx.strokeStyle = item.strokeColor;
-      ctx.lineWidth = item.lineWidth / (a * TEXT_SCALE) || 1;
+      ctx.lineWidth = item.lineWidth / a || 1;
       ctx.strokeText(item.text, 0, 0);
     }
   } else {
-    // 没有 CTM，直接绘制：用 scale 放大 TEXT_SCALE 倍来补偿
-    ctx.translate(item.x, topY);
-    ctx.scale(TEXT_SCALE, TEXT_SCALE);
-    if (item.fill) {
-      ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, 0, 0);
-    }
-    if (item.stroke && item.strokeColor) {
-      ctx.strokeStyle = item.strokeColor;
-      ctx.lineWidth = (item.lineWidth || 1) / TEXT_SCALE;
-      ctx.strokeText(item.text, 0, 0);
-    }
-    // 如果既没有 fill 也没有 stroke，默认填充
-    if (!item.fill && !item.stroke) {
-      ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, 0, 0);
-    }
+    ctx.fillStyle = item.color || "#000";
+    ctx.fillText(item.text, item.x, topY);
   }
 
   ctx.restore();
@@ -937,11 +868,7 @@ async function drawPath(ctx, pathData) {
 }
 
 // ============ 上层透明文本层 ============
-// 关键：color: transparent，位置与 Canvas 文字完全重合
-
-// 创建一个隐藏的 canvas 用于测量文字
-const measureCanvas = document.createElement("canvas");
-const measureCtx = measureCanvas.getContext("2d");
+// 文字由后端光栅化为图片渲染，透明文本层仅用于文字选择
 
 function renderTransparentTextLayer(container, textItems) {
   if (!textItems || textItems.length === 0) return;
@@ -949,9 +876,7 @@ function renderTransparentTextLayer(container, textItems) {
   for (const item of textItems) {
     // 检查是否是占位标记
     if (item.text === "__PLACEHOLDER__") {
-      // 创建透明占位 div
       const placeholderDiv = document.createElement("div");
-      console.log(item);
       placeholderDiv.style.cssText = `
         position: absolute;
         left: ${item.x}px;
@@ -962,7 +887,6 @@ function renderTransparentTextLayer(container, textItems) {
         pointer-events: none;
         z-index: 3;
       `;
-
       placeholderDiv.setAttribute("data-placeholder", "true");
       container.appendChild(placeholderDiv);
       continue;
@@ -971,48 +895,26 @@ function renderTransparentTextLayer(container, textItems) {
     const span = document.createElement("span");
     span.textContent = item.text;
 
-    const TEXT_SCALE = 10; // 与 Canvas 层保持一致的缩放因子
-    const renderFontSize = item.fontSize / TEXT_SCALE;
-
-    // 计算 CTM 变换：缩放因子放大 TEXT_SCALE 倍，补偿 fontSize 的缩小
-    let transform = "";
-    if (item.ctm && item.ctm.length >= 4) {
-      const [a, b, c, d, e, f] = item.ctm;
-      transform = `transform: matrix(${a * TEXT_SCALE}, ${b * TEXT_SCALE}, ${c * TEXT_SCALE}, ${d * TEXT_SCALE}, ${e || 0}, ${f || 0}); transform-origin: left top;`;
-    } else {
-      // 没有 CTM 时，用 scale 放大 TEXT_SCALE 倍来补偿
-      transform = `transform: scale(${TEXT_SCALE}); transform-origin: left top;`;
-    }
-
-    // OFD 坐标系统：使用 Boundary Y 作为统一的顶部参考点
+    // 使用 Boundary Y 作为顶部参考点
     let topPos;
-    if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
+    if (item.boundaryY !== undefined) {
       topPos = item.boundaryY;
     } else {
-      // 兼容旧版本
-      const baselineOffset = item.fontSize * 0.8;
-      topPos = item.y - baselineOffset;
+      topPos = item.y - item.fontSize * 0.8;
     }
 
-    // 关键样式：
-    // - color: transparent 让文字透明（用户看不见）
-    // - 字号缩小 10 倍，transform 放大 10 倍，与 Canvas 层一致
-    // - user-select: text 允许选择
+    // 透明文字，仅用于选择和复制
     span.style.cssText = `
       position: absolute;
       left: ${item.x}px;
       top: ${topPos}px;
-      font-family: ${item.fontFamily};
-      font-size: ${renderFontSize}px;
+      font-size: ${item.fontSize}px;
       color: transparent;
       white-space: pre;
       line-height: 1;
-      letter-spacing: 0;
       cursor: text;
       user-select: text;
       -webkit-user-select: text;
-      -moz-user-select: text;
-      ${transform}
     `;
 
     container.appendChild(span);

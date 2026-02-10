@@ -6,10 +6,17 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"math"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/golang/freetype"
+	"github.com/golang/freetype/truetype"
 )
 
 // PageRenderResult 页面渲染结果
@@ -116,11 +123,12 @@ type TextItem struct {
 
 // FontInfo 字体信息
 type FontInfo struct {
-	ID         string `json:"id"`
-	FontName   string `json:"fontName"`
-	FamilyName string `json:"familyName"`
-	DataURL    string `json:"dataURL,omitempty"`
-	HasFile    bool   `json:"hasFile"`
+	ID              string `json:"id"`
+	FontName        string `json:"fontName"`
+	FamilyName      string `json:"familyName"`
+	DataURL         string `json:"dataURL,omitempty"`
+	HasFile         bool   `json:"hasFile"`
+	NeedRasterize   bool   `json:"needRasterize,omitempty"` // 是否需要后端光栅化（字体损坏无法修复时）
 }
 
 // RenderPage 渲染指定页面
@@ -313,6 +321,13 @@ func (p *Parser) loadImageLazy(resourceID string) []byte {
 func (p *Parser) GetFonts() []FontInfo {
 	p.loadResources()
 
+	if p.ftFonts == nil {
+		p.ftFonts = make(map[string]*truetype.Font)
+	}
+	if p.rasterizeFonts == nil {
+		p.rasterizeFonts = make(map[string]bool)
+	}
+
 	fonts := make([]FontInfo, 0, len(p.fonts))
 	for id, font := range p.fonts {
 		info := FontInfo{
@@ -324,24 +339,20 @@ func (p *Parser) GetFonts() []FontInfo {
 		
 		// 检查是否有嵌入的字体文件（在 OFD 包内）
 		if font.FontFile != "" {
-			// 尝试加载字体文件
 			if fontData, err := p.readFile(font.FontFile); err == nil && len(fontData) > 0 {
 				info.HasFile = true
-				// 检测字体类型
-				mimeType := "font/ttf"
-				if len(fontData) > 4 {
-					switch {
-					case fontData[0] == 0x00 && fontData[1] == 0x01:
-						mimeType = "font/ttf"
-					case fontData[0] == 0x4F && fontData[1] == 0x54:
-						mimeType = "font/otf"
-					case fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x46:
-						mimeType = "font/woff"
-					case fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x32:
-						mimeType = "font/woff2"
-					}
+				
+				// 使用 freetype 解析字体（用于后端光栅化）
+				ftFont, ftErr := truetype.Parse(fontData)
+				if ftErr != nil {
+					fmt.Printf("警告: freetype 解析字体 %s 失败: %v\n", id, ftErr)
+				} else {
+					p.ftFonts[id] = ftFont
+					p.rasterizeFonts[id] = true
+					info.NeedRasterize = true
+					fmt.Printf("字体 %s 将使用后端光栅化\n", id)
 				}
-				info.DataURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(fontData))
+				
 				p.fontFiles[id] = fontData
 			}
 		}
@@ -1436,7 +1447,23 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 	}
 
 	// OFD 中 Size 是字体大小（单位 mm），需要转换为像素
+	// 如果有 CTM 变换矩阵，字体大小需要乘以 CTM 的 ScaleY (d) 缩放因子
 	fontSize := text.Size * scale
+	var ctmScaleX float64 = 1.0
+	var ctmScaleY float64 = 1.0
+	if text.CTM != "" {
+		ctmValues := parseCTM(text.CTM)
+		if len(ctmValues) >= 4 {
+			ctmScaleX = ctmValues[0]
+			ctmScaleY = ctmValues[3]
+			if ctmScaleY > 0 {
+				fontSize = text.Size * ctmScaleY * scale
+			}
+		}
+	}
+
+	// 检查该字体是否有 freetype 字体可用于光栅化
+	canRasterize := p.ftFonts != nil && p.ftFonts[fontID] != nil
 
 	// 处理填充颜色
 	fillColor := "#000"
@@ -1525,8 +1552,9 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 		}
 
 		// TextCode 的 X, Y 是相对于 Boundary 左上角的偏移（单位 mm）
-		tcX := (bx + tc.X) * scale
-		tcY := (by + tc.Y) * scale
+		// 需要应用 CTM 缩放：最终坐标 = Boundary + (TextCode坐标 × CTM缩放)
+		tcX := (bx + tc.X*ctmScaleX) * scale
+		tcY := (by + tc.Y*ctmScaleY) * scale
 
 		// 如果有 GlyphCount，使用它来确定字符数
 		// Glyphs 中的 3 通常代表空格
@@ -1556,36 +1584,76 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 			
 			// 只输出非空格字符，但空格的 DeltaX 仍然要计算
 			if !isSpace {
-				result.TextLayer = append(result.TextLayer, TextItem{
-					Text:        string(char),
-					X:           currentX,
-					Y:           tcY,
-					BoundaryY:   by * scale,    // Boundary 的 Y 坐标（像素）
-					TextCodeY:   tc.Y * scale,  // TextCode 的 Y 坐标（像素）
-					FontSize:    fontSize,
-					FontFamily:  fontFamily,
-					FontID:      fontID,
-					Color:       color,
-					CTM:         ctm,
-					Stroke:      text.Stroke,
-					StrokeColor: strokeColor,
-					LineWidth:   lineWidth,
-					Fill:        shouldFill,
-				})
+				rasterized := false
+				if canRasterize {
+					// 后端光栅化：使用 freetype 将文字渲染成图片
+					rgba := parseColorToRGBA(color)
+					imgData, imgW, imgH, err := p.rasterizeText(string(char), fontID, fontSize, rgba)
+					if err != nil {
+						if debug != nil {
+							debug.TextDebug = append(debug.TextDebug,
+								fmt.Sprintf("rasterize fallback: char='%s' fontID=%s err=%v", string(char), fontID, err))
+						}
+					} else if len(imgData) > 0 {
+						dataURL := fmt.Sprintf("data:image/png;base64,%s", base64.StdEncoding.EncodeToString(imgData))
+						result.CanvasData.Images = append(result.CanvasData.Images, ImageData{
+							DataURL: dataURL,
+							X:       currentX,
+							Y:       tcY - fontSize*0.85,
+							Width:   float64(imgW),
+							Height:  float64(imgH),
+						})
+						rasterized = true
+					}
+				}
+
+				if rasterized {
+					// 光栅化成功，添加透明文本层用于选择
+					result.TextLayer = append(result.TextLayer, TextItem{
+						Text:      string(char),
+						X:         currentX,
+						Y:         tcY,
+						BoundaryY: by * scale,
+						TextCodeY: tc.Y * scale,
+						FontSize:  fontSize,
+						FontFamily: fontFamily,
+						FontID:    fontID,
+						Color:     "transparent",
+						Fill:      true,
+					})
+				} else {
+					// 回退：光栅化失败或没有 freetype 字体，发送给前端渲染
+					result.TextLayer = append(result.TextLayer, TextItem{
+						Text:        string(char),
+						X:           currentX,
+						Y:           tcY,
+						BoundaryY:   by * scale,
+						TextCodeY:   tc.Y * scale,
+						FontSize:    fontSize,
+						FontFamily:  fontFamily,
+						FontID:      fontID,
+						Color:       color,
+						CTM:         ctm,
+						Stroke:      text.Stroke,
+						StrokeColor: strokeColor,
+						LineWidth:   lineWidth,
+						Fill:        shouldFill,
+					})
+				}
 			}
 
 			// 计算下一个字符的位置（包括空格的间距）
 			if i < len(deltaX) {
 				delta := deltaX[i] * scale
-				if len(ctm) >= 1 && ctm[0] != 0 {
-					delta = delta * ctm[0]
+				if ctmScaleX != 1.0 {
+					delta = delta * ctmScaleX
 				}
 				currentX += delta
 			} else if i < len(chars)-1 {
 				// 没有 DeltaX，使用字号作为默认间距
 				defaultWidth := text.Size * scale
-				if len(ctm) >= 1 && ctm[0] != 0 {
-					defaultWidth = defaultWidth * ctm[0]
+				if ctmScaleX != 1.0 {
+					defaultWidth = defaultWidth * ctmScaleX
 				}
 				currentX += defaultWidth
 			}
@@ -2216,4 +2284,123 @@ func (p *Parser) parseSignatureXMLWithAlgo(data []byte, debug *DebugInfo) ([]Sta
 	}
 
 	return annots, isPrivateAlgo
+}
+
+// ============ 后端光栅化功能 ============
+
+// rasterizeText 使用 freetype 将文字渲染成图片
+// fontSize: 应用 CTM 缩放后的最终像素字号
+// fillColor: 填充颜色
+func (p *Parser) rasterizeText(text string, fontID string, fontSize float64, fillColor color.RGBA) ([]byte, int, int, error) {
+	ftFont, ok := p.ftFonts[fontID]
+	if !ok {
+		return nil, 0, 0, fmt.Errorf("freetype font not found: %s", fontID)
+	}
+
+	if fontSize < 1 {
+		fontSize = 1
+	}
+
+	// 先检查字体是否包含所需字形
+	// 如果字形索引为 0，说明字体不包含该字符
+	runes := []rune(text)
+	for _, r := range runes {
+		glyphIndex := ftFont.Index(r)
+		if glyphIndex == 0 {
+			return nil, 0, 0, fmt.Errorf("font %s does not contain glyph for '%c' (U+%04X)", fontID, r, r)
+		}
+	}
+
+	dpi := 72.0
+
+	// 估算图片尺寸（单个字符）
+	imgWidth := int(math.Ceil(fontSize * float64(len(runes)) * 1.5))
+	imgHeight := int(math.Ceil(fontSize * 1.6))
+	if imgWidth < 1 {
+		imgWidth = 1
+	}
+	if imgHeight < 1 {
+		imgHeight = 1
+	}
+
+	// 创建 RGBA 图片（透明背景）
+	img := image.NewRGBA(image.Rect(0, 0, imgWidth, imgHeight))
+
+	// 创建 freetype 上下文
+	ctx := freetype.NewContext()
+	ctx.SetDPI(dpi)
+	ctx.SetFont(ftFont)
+	ctx.SetFontSize(fontSize)
+	ctx.SetClip(img.Bounds())
+	ctx.SetDst(img)
+	ctx.SetSrc(image.NewUniform(fillColor))
+
+	// 基线位置：约 80% 的字号高度
+	baselineY := int(fontSize * 0.85)
+	pt := freetype.Pt(0, baselineY)
+	endPt, err := ctx.DrawString(text, pt)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("draw string failed: %w", err)
+	}
+
+	// 实际绘制宽度
+	actualWidth := int(endPt.X+32) >> 6
+	if actualWidth < 1 {
+		// 绘制宽度为 0，说明字形为空或不可见
+		return nil, 0, 0, fmt.Errorf("glyph rendered with zero width for '%s'", text)
+	}
+	if actualWidth > imgWidth {
+		actualWidth = imgWidth
+	}
+
+	// 检查图片是否有实际像素内容（非全透明）
+	hasContent := false
+	croppedImg := img.SubImage(image.Rect(0, 0, actualWidth, imgHeight)).(*image.RGBA)
+	for i := 3; i < len(croppedImg.Pix); i += 4 {
+		if croppedImg.Pix[i] > 0 { // 检查 alpha 通道
+			hasContent = true
+			break
+		}
+	}
+	if !hasContent {
+		return nil, 0, 0, fmt.Errorf("rasterized image is empty (all transparent) for '%s'", text)
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, croppedImg); err != nil {
+		return nil, 0, 0, fmt.Errorf("png encode failed: %w", err)
+	}
+
+	return buf.Bytes(), actualWidth, imgHeight, nil
+}
+
+// parseColorToRGBA 将颜色字符串转换为 color.RGBA
+func parseColorToRGBA(colorStr string) color.RGBA {
+	// 处理 rgb(r,g,b) 格式
+	if strings.HasPrefix(colorStr, "rgb(") {
+		inner := strings.TrimPrefix(colorStr, "rgb(")
+		inner = strings.TrimSuffix(inner, ")")
+		parts := strings.Split(inner, ",")
+		if len(parts) >= 3 {
+			r, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+			g, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+			b, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
+			return color.RGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}
+		}
+	}
+	// 处理 #hex 格式
+	if strings.HasPrefix(colorStr, "#") {
+		hex := strings.TrimPrefix(colorStr, "#")
+		if len(hex) == 3 {
+			hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+		}
+		if len(hex) == 6 {
+			r, _ := strconv.ParseUint(hex[0:2], 16, 8)
+			g, _ := strconv.ParseUint(hex[2:4], 16, 8)
+			b, _ := strconv.ParseUint(hex[4:6], 16, 8)
+			return color.RGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}
+		}
+	}
+	// 默认黑色
+	return color.RGBA{R: 0, G: 0, B: 0, A: 255}
 }

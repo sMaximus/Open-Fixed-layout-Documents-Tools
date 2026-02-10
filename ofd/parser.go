@@ -9,6 +9,8 @@ import (
 	"io"
 	"path"
 	"strings"
+
+	"github.com/golang/freetype/truetype"
 )
 
 // ParseResult OFD解析结果
@@ -30,6 +32,10 @@ type Parser struct {
 	fonts     map[string]Font
 	fontFiles map[string][]byte
 	images    map[string][]byte
+	// freetype 字体缓存：fontID -> 已解析的 truetype.Font
+	ftFonts   map[string]*truetype.Font
+	// 标记需要后端光栅化的字体
+	rasterizeFonts map[string]bool
 }
 
 // NewParser 创建解析器
