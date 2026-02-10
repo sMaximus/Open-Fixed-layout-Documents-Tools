@@ -69,7 +69,16 @@ type CGTransform struct {
 	CodePosition int    `xml:"CodePosition,attr"`
 	CodeCount    int    `xml:"CodeCount,attr"`
 	GlyphCount   int    `xml:"GlyphCount,attr"`
-	Glyphs       string `xml:"Glyphs,attr"`
+	GlyphsAttr   string `xml:"Glyphs,attr"`   // Glyphs 作为属性
+	GlyphsElem   string `xml:"Glyphs"`        // Glyphs 作为子元素
+}
+
+// GetGlyphs 获取 Glyphs 值（兼容属性和子元素两种格式）
+func (c *CGTransform) GetGlyphs() string {
+	if c.GlyphsAttr != "" {
+		return c.GlyphsAttr
+	}
+	return c.GlyphsElem
 }
 
 // PathObject 路径对象
@@ -89,10 +98,11 @@ type PathObject struct {
 
 // ImageObject 图像对象
 type ImageObject struct {
-	ID         string `xml:"ID,attr"`
-	Boundary   string `xml:"Boundary,attr"`
-	ResourceID string `xml:"ResourceID,attr"`
-	CTM        string `xml:"CTM,attr"`
+	ID         string  `xml:"ID,attr"`
+	Boundary   string  `xml:"Boundary,attr"`
+	ResourceID string  `xml:"ResourceID,attr"`
+	CTM        string  `xml:"CTM,attr"`
+	Alpha      int     `xml:"Alpha,attr"`
 }
 
 // Color 颜色
@@ -323,12 +333,30 @@ type AnnotElement struct {
 
 // AnnotAppearance 注释外观
 type AnnotAppearance struct {
-	Boundary   string            `xml:"Boundary,attr"`
-	PageBlocks []AnnotPageBlock  `xml:"PageBlock"`
+	Boundary     string            `xml:"Boundary,attr"`
+	PageBlocks   []AnnotPageBlock  `xml:"PageBlock"`
+	// 直接包含的对象（某些 OFD 文档 Appearance 下直接放对象，不包 PageBlock）
+	ImageObjects []ImageObject     `xml:"ImageObject"`
+	PathObjects  []PathObject      `xml:"PathObject"`
+	TextObjects  []TextObject      `xml:"TextObject"`
 }
 
 // AnnotPageBlock 注释页面块
 type AnnotPageBlock struct {
 	ID           string        `xml:"ID,attr"`
 	ImageObjects []ImageObject `xml:"ImageObject"`
+	PathObjects  []PathObject  `xml:"PathObject"`
+	TextObjects  []TextObject  `xml:"TextObject"`
+}
+
+// AnnotationsFile Annotations.xml 索引文件
+type AnnotationsFile struct {
+	XMLName xml.Name        `xml:"Annotations"`
+	Pages   []AnnotPage     `xml:"Page"`
+}
+
+// AnnotPage 注释索引中的页面条目
+type AnnotPage struct {
+	PageID  string `xml:"PageID,attr"`
+	FileLoc string `xml:"FileLoc"`
 }

@@ -91,6 +91,7 @@ type ImageData struct {
 	Width   float64   `json:"width"`
 	Height  float64   `json:"height"`
 	CTM     []float64 `json:"ctm,omitempty"`    // CTM 变换矩阵 [a, b, c, d, e, f]
+	Alpha   float64   `json:"alpha,omitempty"`   // 透明度 0~1，0 表示不设置
 	IsSeal  bool      `json:"isSeal,omitempty"` // 是否是印章图片
 }
 
@@ -121,6 +122,13 @@ type FontInfo struct {
 	FamilyName string `json:"familyName"`
 	DataURL    string `json:"dataURL,omitempty"`
 	HasFile    bool   `json:"hasFile"`
+}
+
+// GlyphMapping 记录一个字体中 Unicode 码点到 Glyph ID 的映射
+// 从所有页面的 CGTransform 中收集
+type GlyphMapping struct {
+	Unicode rune
+	GlyphID uint16
 }
 
 // RenderPage 渲染指定页面
@@ -309,9 +317,14 @@ func (p *Parser) loadImageLazy(resourceID string) []byte {
 	return nil
 }
 
-// GetFonts 获取所有字体信息（优化版：不加载字体文件数据）
+// GetFonts 获取所有字体信息
+// 先扫描所有页面收集 CGTransform 中的 Unicode→GlyphID 映射，
+// 然后将映射注入字体的 cmap 表，确保浏览器能正确渲染。
 func (p *Parser) GetFonts() []FontInfo {
 	p.loadResources()
+
+	// 收集所有页面中每个字体的 Unicode→GlyphID 映射
+	glyphMappings := p.collectGlyphMappings()
 
 	fonts := make([]FontInfo, 0, len(p.fonts))
 	for id, font := range p.fonts {
@@ -326,6 +339,10 @@ func (p *Parser) GetFonts() []FontInfo {
 		if font.FontFile != "" {
 			// 尝试加载字体文件
 			if fontData, err := p.readFile(font.FontFile); err == nil && len(fontData) > 0 {
+				// 修复字体结构问题，并注入 CGTransform 的 GlyphID 映射到 cmap
+				mappings := glyphMappings[id]
+				fontData = SanitizeFontWithMappings(fontData, mappings)
+
 				info.HasFile = true
 				// 检测字体类型
 				mimeType := "font/ttf"
@@ -350,6 +367,106 @@ func (p *Parser) GetFonts() []FontInfo {
 	}
 
 	return fonts
+}
+
+// collectGlyphMappings 扫描所有页面，收集每个字体的 Unicode→GlyphID 映射
+// 返回 map[fontID][]GlyphMapping
+func (p *Parser) collectGlyphMappings() map[string][]GlyphMapping {
+	result := make(map[string][]GlyphMapping)
+
+	if p.document == nil {
+		return result
+	}
+
+	// 用于去重
+	seen := make(map[string]map[uint32]bool) // fontID → set of (unicode<<16 | glyphID)
+
+	for pageIdx := 0; pageIdx < len(p.document.Pages.Page); pageIdx++ {
+		pagePath := p.GetPagePath(pageIdx)
+		if pagePath == "" {
+			continue
+		}
+
+		pageData, err := p.readFile(pagePath)
+		if err != nil {
+			continue
+		}
+
+		pageXML := removeNamespacePrefix(string(pageData))
+		var page Page
+		if err := xml.Unmarshal([]byte(pageXML), &page); err != nil {
+			continue
+		}
+
+		// 合并所有 Layer 来源
+		layers := page.Content.Layer
+		if len(layers) == 0 {
+			layers = page.ContentNS.Layer
+		}
+		if len(layers) == 0 {
+			layers = page.Layer
+		}
+
+		for _, layer := range layers {
+			for _, text := range layer.TextObjects {
+				if len(text.CGTransform) == 0 {
+					continue
+				}
+
+				fontID := text.Font
+
+				if seen[fontID] == nil {
+					seen[fontID] = make(map[uint32]bool)
+				}
+
+				for _, tc := range text.TextCode {
+					chars := []rune(tc.Content)
+
+					// 解析所有 CGTransform，建立 position→glyphIDs 映射
+					for _, cgt := range text.CGTransform {
+						if cgt.GetGlyphs() == "" {
+							continue
+						}
+
+						glyphIDStrs := strings.Fields(cgt.GetGlyphs())
+						codePos := cgt.CodePosition
+						codeCount := cgt.CodeCount
+						if codeCount == 0 {
+							codeCount = 1
+						}
+
+						for gi, gidStr := range glyphIDStrs {
+							gid, err := strconv.Atoi(gidStr)
+							if err != nil || gid <= 0 {
+								continue
+							}
+
+							// 对应的字符索引
+							charIdx := codePos + gi
+							if gi >= codeCount {
+								// GlyphCount > CodeCount 时，多余的 glyph 对应同一组字符
+								charIdx = codePos + codeCount - 1
+							}
+
+							if charIdx < len(chars) {
+								ch := chars[charIdx]
+								key := uint32(ch)<<16 | uint32(gid)
+								if !seen[fontID][key] {
+									seen[fontID][key] = true
+									result[fontID] = append(result[fontID], GlyphMapping{
+										Unicode: ch,
+										GlyphID: uint16(gid),
+									})
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 // GetDebugInfo 获取调试信息
@@ -436,135 +553,145 @@ func (p *Parser) extractRenderData(result *PageRenderResult, page *Page, scale f
 }
 
 // loadPageAnnotImages 加载页面注释中的图片
+// 通过 Document.xml 中的 Annotations 引用找到 Annotations.xml 索引文件，
+// 再根据 PageID 找到对应页面的注释文件进行解析。
 func (p *Parser) loadPageAnnotImages(result *PageRenderResult, scale float64, pageIndex int, debug *DebugInfo) {
-	// 查找当前页面的注释文件
-	for _, file := range p.files {
-		lower := strings.ToLower(file)
-		// 匹配 Annots/Page_X/Annotation.xml 格式
-		if (strings.Contains(lower, "annot") || strings.Contains(lower, "annotation")) && 
-		   strings.HasSuffix(lower, ".xml") {
-			
-			// 检查是否是当前页面的注释
-			pageMatch := false
-			if strings.Contains(lower, fmt.Sprintf("page_%d", pageIndex)) ||
-			   strings.Contains(lower, fmt.Sprintf("page_%d", pageIndex+1)) ||
-			   strings.Contains(lower, fmt.Sprintf("/page_%d/", pageIndex)) ||
-			   strings.Contains(lower, fmt.Sprintf("\\page_%d\\", pageIndex)) {
-				pageMatch = true
+	if p.document == nil || pageIndex >= len(p.document.Pages.Page) {
+		return
+	}
+
+	pageID := p.document.Pages.Page[pageIndex].ID
+
+	// 获取文档根目录
+	docBase := ""
+	if p.ofd != nil && len(p.ofd.DocBody) > 0 {
+		docRoot := strings.TrimPrefix(p.ofd.DocBody[0].DocRoot, "/")
+		docBase = path.Dir(docRoot)
+	}
+
+	// 1. 找到 Annotations.xml 索引文件
+	annotIndexPath := ""
+	if p.document.Annotations != "" {
+		annotIndexPath = path.Join(docBase, strings.TrimPrefix(p.document.Annotations, "/"))
+	}
+	// 如果 Document.xml 中没有声明，尝试常见路径
+	if annotIndexPath == "" {
+		for _, file := range p.files {
+			lower := strings.ToLower(file)
+			if strings.HasSuffix(lower, "annotations.xml") && !strings.Contains(lower, "page_") {
+				annotIndexPath = file
+				break
 			}
-			
-			if !pageMatch {
-				continue
+		}
+	}
+	if annotIndexPath == "" {
+		return
+	}
+
+	indexData, err := p.readFile(annotIndexPath)
+	if err != nil {
+		debug.Stamps = append(debug.Stamps, "read annotations index error: "+err.Error())
+		return
+	}
+
+	xmlStr := removeNamespacePrefix(string(indexData))
+	var annotIndex AnnotationsFile
+	if err := xml.Unmarshal([]byte(xmlStr), &annotIndex); err != nil {
+		debug.Stamps = append(debug.Stamps, "parse annotations index error: "+err.Error())
+		return
+	}
+
+	annotIndexDir := path.Dir(annotIndexPath)
+
+	// 2. 找到当前页面对应的注释文件
+	for _, ap := range annotIndex.Pages {
+		if ap.PageID != pageID {
+			continue
+		}
+
+		annotFilePath := path.Join(annotIndexDir, strings.TrimPrefix(ap.FileLoc, "/"))
+		annotData, err := p.readFile(annotFilePath)
+		if err != nil {
+			debug.Stamps = append(debug.Stamps, "read annot file error: "+annotFilePath+" "+err.Error())
+			continue
+		}
+
+		annotXML := removeNamespacePrefix(string(annotData))
+		var pageAnnot PageAnnot
+		if err := xml.Unmarshal([]byte(annotXML), &pageAnnot); err != nil {
+			debug.Stamps = append(debug.Stamps, "parse annot error: "+err.Error())
+			continue
+		}
+
+		// 3. 处理每个注释
+		for _, annot := range pageAnnot.Annots {
+			ax, ay, _, _ := parseBoundary(annot.Appearance.Boundary)
+
+			// 收集所有 ImageObject：来自 PageBlock 和直接子元素
+			var allImages []ImageObject
+			for _, block := range annot.Appearance.PageBlocks {
+				allImages = append(allImages, block.ImageObjects...)
 			}
-			
-			data, err := p.readFile(file)
-			if err != nil {
-				continue
-			}
-			
-			// 移除命名空间前缀
-			xmlStr := removeNamespacePrefix(string(data))
-			
-			// 解析注释文件
-			var pageAnnot PageAnnot
-			if err := xml.Unmarshal([]byte(xmlStr), &pageAnnot); err != nil {
-				debug.Stamps = append(debug.Stamps, fmt.Sprintf("parse annot error: %v", err))
-				continue
-			}
-			
-			annotDir := path.Dir(file)
-			
-			// 处理每个注释
-			for _, annot := range pageAnnot.Annots {
-				// 解析 Appearance 中的 Boundary
-				ax, ay, _, _ := parseBoundary(annot.Appearance.Boundary)
-				
-				// 处理 PageBlock 中的图片
-				for _, block := range annot.Appearance.PageBlocks {
-					for _, img := range block.ImageObjects {
-						// 查找图片资源
-						imgData, ok := p.images[img.ResourceID]
-						if !ok {
-							// 尝试从注释目录加载
-							imgData = p.loadAnnotImage(annotDir, img.ResourceID, debug)
-							if imgData == nil {
-								debug.MissingIDs = append(debug.MissingIDs, img.ResourceID)
-								continue
-							}
-						}
-						
-						// 解析图片边界
-						ix, iy, iw, ih := parseBoundary(img.Boundary)
-						
-						// 计算最终位置（Appearance 位置 + 图片相对位置）
-						finalX := (ax + ix) * scale
-						finalY := (ay + iy) * scale
-						finalW := iw * scale
-						finalH := ih * scale
-						
-						// 检测图片类型
-						mimeType := "image/png"
-						if len(imgData) > 2 && imgData[0] == 0xFF && imgData[1] == 0xD8 {
-							mimeType = "image/jpeg"
-						}
-						
-						result.CanvasData.Images = append(result.CanvasData.Images, ImageData{
-							DataURL: fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgData)),
-							X:       finalX,
-							Y:       finalY,
-							Width:   finalW,
-							Height:  finalH,
-						})
-						
-						debug.Stamps = append(debug.Stamps, fmt.Sprintf("annot image added: id=%s, pos=(%.2f,%.2f), size=(%.2f,%.2f)", 
-							img.ResourceID, finalX, finalY, finalW, finalH))
-					}
-				}
+			allImages = append(allImages, annot.Appearance.ImageObjects...)
+
+			for _, img := range allImages {
+				p.renderAnnotImage(result, scale, &img, ax, ay, debug)
 			}
 		}
 	}
 }
 
-// loadAnnotImage 从注释目录加载图片
-func (p *Parser) loadAnnotImage(annotDir string, resourceID string, debug *DebugInfo) []byte {
-	// 尝试多种路径
-	candidates := []string{
-		path.Join(annotDir, "Res", resourceID+".png"),
-		path.Join(annotDir, "Res", resourceID+".jpg"),
-		path.Join(annotDir, "Res", resourceID+".jpeg"),
-		path.Join(annotDir, resourceID+".png"),
-		path.Join(annotDir, resourceID+".jpg"),
+// renderAnnotImage 渲染注释中的单个图片对象
+func (p *Parser) renderAnnotImage(result *PageRenderResult, scale float64, img *ImageObject, ax, ay float64, debug *DebugInfo) {
+	// 查找图片资源（先从文档资源中找，再懒加载）
+	imgData := p.loadImageLazy(img.ResourceID)
+	if imgData == nil || len(imgData) == 0 {
+		debug.MissingIDs = append(debug.MissingIDs, img.ResourceID)
+		return
 	}
-	
-	for _, candidate := range candidates {
-		if imgData, err := p.readFile(candidate); err == nil {
-			debug.Stamps = append(debug.Stamps, "loaded annot image: "+candidate)
-			p.images[resourceID] = imgData
-			return imgData
-		}
+
+	ix, iy, iw, ih := parseBoundary(img.Boundary)
+
+	mimeType := "image/png"
+	if len(imgData) > 2 && imgData[0] == 0xFF && imgData[1] == 0xD8 {
+		mimeType = "image/jpeg"
 	}
-	
-	// 扫描注释目录下的所有图片文件
-	for _, file := range p.files {
-		if strings.HasPrefix(file, annotDir) {
-			lower := strings.ToLower(file)
-			if strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") {
-				baseName := path.Base(file)
-				ext := path.Ext(baseName)
-				id := strings.TrimSuffix(baseName, ext)
-				
-				if id == resourceID {
-					if imgData, err := p.readFile(file); err == nil {
-						debug.Stamps = append(debug.Stamps, "loaded annot image by scan: "+file)
-						p.images[resourceID] = imgData
-						return imgData
-					}
-				}
+
+	imgDataOut := ImageData{
+		DataURL: fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imgData)),
+		X:       (ax + ix) * scale,
+		Y:       (ay + iy) * scale,
+		Width:   iw * scale,
+		Height:  ih * scale,
+	}
+
+	// 处理 CTM 变换
+	if img.CTM != "" {
+		ctm := parseCTM(img.CTM)
+		if len(ctm) >= 4 {
+			e, f := 0.0, 0.0
+			if len(ctm) > 4 {
+				e = ctm[4] * scale
+			}
+			if len(ctm) > 5 {
+				f = ctm[5] * scale
+			}
+			imgDataOut.CTM = []float64{
+				ctm[0] * scale, ctm[1] * scale,
+				ctm[2] * scale, ctm[3] * scale,
+				e, f,
 			}
 		}
 	}
-	
-	return nil
+
+	// 处理 Alpha 透明度（OFD 中 Alpha 范围 0~255）
+	if img.Alpha > 0 && img.Alpha < 255 {
+		imgDataOut.Alpha = float64(img.Alpha) / 255.0
+	}
+
+	result.CanvasData.Images = append(result.CanvasData.Images, imgDataOut)
+	debug.Stamps = append(debug.Stamps, fmt.Sprintf("annot image: id=%s, pos=(%.1f,%.1f), alpha=%d",
+		img.ResourceID, imgDataOut.X, imgDataOut.Y, img.Alpha))
 }
 
 // loadStamps 加载签章
@@ -1435,7 +1562,8 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 		}
 	}
 
-	// OFD 中 Size 是字体大小（单位 mm），需要转换为像素
+	// OFD 中 Size 是字体大小（在对象坐标空间中，单位 mm）
+	// 前端会通过 ctx.transform 应用 CTM 缩放，所以这里保持原始值
 	fontSize := text.Size * scale
 
 	// 处理填充颜色
@@ -1506,8 +1634,8 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 		if len(text.CGTransform) > 0 {
 			for _, cgt := range text.CGTransform {
 				glyphCount = cgt.GlyphCount
-				if cgt.Glyphs != "" {
-					glyphIDStrs := strings.Fields(cgt.Glyphs)
+				if cgt.GetGlyphs() != "" {
+					glyphIDStrs := strings.Fields(cgt.GetGlyphs())
 					for _, gidStr := range glyphIDStrs {
 						gid, err := strconv.Atoi(gidStr)
 						if err == nil {
@@ -1524,9 +1652,19 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 			deltaX = parseDeltas(tc.DeltaX)
 		}
 
-		// TextCode 的 X, Y 是相对于 Boundary 左上角的偏移（单位 mm）
-		tcX := (bx + tc.X) * scale
-		tcY := (by + tc.Y) * scale
+		// TextCode 的 X, Y 是在文本对象坐标空间中的坐标
+		// 如果有 CTM，需要用 CTM 的缩放/旋转部分 (a,b,c,d) 变换到页面空间
+		// CTM 的平移部分 (e,f) 由前端 ctx.transform 处理，这里不包含
+		tcXmm := tc.X
+		tcYmm := tc.Y
+		if len(ctm) >= 4 {
+			// CTM 变换（仅缩放/旋转）: newX = a*x + c*y, newY = b*x + d*y
+			a, b, c, d := ctm[0], ctm[1], ctm[2], ctm[3]
+			tcXmm = a*tc.X + c*tc.Y
+			tcYmm = b*tc.X + d*tc.Y
+		}
+		tcX := (bx + tcXmm) * scale
+		tcY := (by + tcYmm) * scale
 
 		// 如果有 GlyphCount，使用它来确定字符数
 		// Glyphs 中的 3 通常代表空格

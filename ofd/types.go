@@ -53,6 +53,7 @@ type Document struct {
 	XMLName      xml.Name     `xml:"Document"`
 	CommonData   CommonData   `xml:"CommonData"`
 	Pages        Pages        `xml:"Pages"`
+	Annotations  string       `xml:"Annotations"`
 }
 
 // 公共数据

@@ -373,12 +373,18 @@ class OFDViewer {
   _drawText(ctx, item) {
     ctx.save();
     ctx.font = `${item.fontSize}px ${item.fontFamily}`;
-    ctx.textBaseline = "top";
 
-    let topY =
-      item.boundaryY !== undefined
-        ? item.boundaryY
-        : item.y - item.fontSize * 0.8;
+    let topY;
+    if (item.ctm && item.ctm.length >= 4) {
+      ctx.textBaseline = "alphabetic";
+      topY = item.y;
+    } else if (item.boundaryY !== undefined) {
+      ctx.textBaseline = "top";
+      topY = item.boundaryY;
+    } else {
+      ctx.textBaseline = "top";
+      topY = item.y - item.fontSize * 0.8;
+    }
 
     if (item.ctm && item.ctm.length >= 4) {
       const [a, b, c, d, e, f] = item.ctm;
@@ -417,6 +423,9 @@ class OFDViewer {
       const img = new Image();
       img.onload = () => {
         ctx.save();
+        if (imgData.alpha > 0 && imgData.alpha < 1) {
+          ctx.globalAlpha = imgData.alpha;
+        }
         if (imgData.ctm && imgData.ctm.length >= 4) {
           const [a, b, c, d, e, f] = imgData.ctm;
           ctx.translate(imgData.x, imgData.y);
@@ -703,9 +712,11 @@ class OFDViewer {
       }
 
       const topPos =
-        item.boundaryY !== undefined
-          ? item.boundaryY
-          : item.y - item.fontSize * 0.8;
+        item.ctm && item.ctm.length >= 4
+          ? item.y
+          : item.boundaryY !== undefined
+            ? item.boundaryY
+            : item.y - item.fontSize * 0.8;
 
       span.style.cssText = `
         position:absolute;

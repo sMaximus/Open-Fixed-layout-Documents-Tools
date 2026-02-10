@@ -451,20 +451,20 @@ function drawText(ctx, item) {
   let fontFamily = item.fontFamily;
   ctx.font = `${renderFontSize}px ${fontFamily}`;
 
-  ctx.textBaseline = "top";
-
   // OFD 坐标系统：
-  // - item.boundaryY 是 Boundary 的顶部位置
-  // - item.textCodeY 是相对于 Boundary 顶部的基线偏移
-  // 不同字体的 textCodeY 不同，这是为了让不同字体对齐
-  // 我们应该使用 boundaryY 作为统一的顶部参考点
+  // - 有 CTM 时，item.y 是基线（Baseline）位置，字身在基线之上绘制
+  // - 没有 CTM 时，使用 Boundary Y 作为顶部参考点
 
   let topY;
-  if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
-    // 使用 Boundary Y 作为顶部参考点
+  if (item.ctm && item.ctm.length >= 4) {
+    // 有 CTM 时，TextCode Y 是基线位置
+    ctx.textBaseline = "alphabetic";
+    topY = item.y;
+  } else if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
+    ctx.textBaseline = "top";
     topY = item.boundaryY;
   } else {
-    // 兼容旧版本：使用固定比例
+    ctx.textBaseline = "top";
     const baselineOffset = item.fontSize * 0.8;
     topY = item.y - baselineOffset;
   }
@@ -526,6 +526,11 @@ function drawImage(ctx, imgData) {
     img.onload = () => {
       ctx.save();
 
+      // 处理 Alpha 透明度
+      if (imgData.alpha > 0 && imgData.alpha < 1) {
+        ctx.globalAlpha = imgData.alpha;
+      }
+
       // 如果有 CTM 变换（旋转/倾斜）
       if (imgData.ctm && imgData.ctm.length >= 4) {
         const [a, b, c, d, e, f] = imgData.ctm;
@@ -535,7 +540,6 @@ function drawImage(ctx, imgData) {
 
         // 图片在对象坐标系中是单位正方形 (0,0)-(1,1)
         // CTM 将其变换到实际尺寸和旋转
-        // 需要将 CTM 应用到单位正方形，然后绘制图片
         ctx.transform(a, b, c, d, e || 0, f || 0);
 
         // 绘制单位正方形大小的图片（CTM 会将其变换到正确尺寸）
@@ -984,9 +988,11 @@ function renderTransparentTextLayer(container, textItems) {
       transform = `transform: scale(${TEXT_SCALE}); transform-origin: left top;`;
     }
 
-    // OFD 坐标系统：使用 Boundary Y 作为统一的顶部参考点
+    // OFD 坐标系统：有 CTM 时使用变换后的 Y，否则使用 Boundary Y
     let topPos;
-    if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
+    if (item.ctm && item.ctm.length >= 4) {
+      topPos = item.y;
+    } else if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
       topPos = item.boundaryY;
     } else {
       // 兼容旧版本
