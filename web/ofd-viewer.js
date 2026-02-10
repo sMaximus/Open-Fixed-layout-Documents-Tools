@@ -372,7 +372,10 @@ class OFDViewer {
 
   _drawText(ctx, item) {
     ctx.save();
-    ctx.font = `${item.fontSize}px ${item.fontFamily}`;
+
+    const TEXT_SCALE = 10;
+    const renderFontSize = item.fontSize / TEXT_SCALE;
+    ctx.font = `${renderFontSize}px ${item.fontFamily}`;
 
     let topY;
     if (item.ctm && item.ctm.length >= 4) {
@@ -389,7 +392,14 @@ class OFDViewer {
     if (item.ctm && item.ctm.length >= 4) {
       const [a, b, c, d, e, f] = item.ctm;
       ctx.translate(item.x, topY);
-      ctx.transform(a, b, c, d, e || 0, f || 0);
+      ctx.transform(
+        a * TEXT_SCALE,
+        b * TEXT_SCALE,
+        c * TEXT_SCALE,
+        d * TEXT_SCALE,
+        e || 0,
+        f || 0,
+      );
 
       if (item.fill) {
         ctx.fillStyle = item.color || "#000";
@@ -397,22 +407,24 @@ class OFDViewer {
       }
       if (item.stroke && item.strokeColor) {
         ctx.strokeStyle = item.strokeColor;
-        ctx.lineWidth = item.lineWidth / a || 1;
+        ctx.lineWidth = item.lineWidth / (a * TEXT_SCALE) || 1;
         ctx.strokeText(item.text, 0, 0);
       }
     } else {
+      ctx.translate(item.x, topY);
+      ctx.scale(TEXT_SCALE, TEXT_SCALE);
       if (item.fill) {
         ctx.fillStyle = item.color || "#000";
-        ctx.fillText(item.text, item.x, topY);
+        ctx.fillText(item.text, 0, 0);
       }
       if (item.stroke && item.strokeColor) {
         ctx.strokeStyle = item.strokeColor;
-        ctx.lineWidth = item.lineWidth || 1;
-        ctx.strokeText(item.text, item.x, topY);
+        ctx.lineWidth = (item.lineWidth || 1) / TEXT_SCALE;
+        ctx.strokeText(item.text, 0, 0);
       }
       if (!item.fill && !item.stroke) {
         ctx.fillStyle = item.color || "#000";
-        ctx.fillText(item.text, item.x, topY);
+        ctx.fillText(item.text, 0, 0);
       }
     }
     ctx.restore();
@@ -689,6 +701,8 @@ class OFDViewer {
   _renderTextLayer(container, textItems) {
     if (!textItems) return;
 
+    const TEXT_SCALE = 10;
+
     for (const item of textItems) {
       if (item.text === "__PLACEHOLDER__") {
         const div = document.createElement("div");
@@ -705,10 +719,14 @@ class OFDViewer {
       const span = document.createElement("span");
       span.textContent = item.text;
 
+      const renderFontSize = item.fontSize / TEXT_SCALE;
+
       let transform = "";
       if (item.ctm && item.ctm.length >= 4) {
         const [a, b, c, d, e, f] = item.ctm;
-        transform = `transform:matrix(${a},${b},${c},${d},${e || 0},${f || 0});transform-origin:left top;`;
+        transform = `transform:matrix(${a * TEXT_SCALE},${b * TEXT_SCALE},${c * TEXT_SCALE},${d * TEXT_SCALE},${e || 0},${f || 0});transform-origin:left top;`;
+      } else {
+        transform = `transform:scale(${TEXT_SCALE});transform-origin:left top;`;
       }
 
       const topPos =
@@ -722,7 +740,7 @@ class OFDViewer {
         position:absolute;
         left:${item.x}px;top:${topPos}px;
         font-family:${item.fontFamily};
-        font-size:${item.fontSize}px;
+        font-size:${renderFontSize}px;
         color:transparent;
         white-space:pre;
         line-height:1;
