@@ -58,10 +58,17 @@ type Document struct {
 
 // 公共数据
 type CommonData struct {
-	MaxUnitID   int         `xml:"MaxUnitID"`
-	PageArea    PageArea    `xml:"PageArea"`
-	PublicRes   []string    `xml:"PublicRes"`
-	DocumentRes []string    `xml:"DocumentRes"`
+	MaxUnitID    int            `xml:"MaxUnitID"`
+	PageArea     PageArea       `xml:"PageArea"`
+	PublicRes    []string       `xml:"PublicRes"`
+	DocumentRes  []string       `xml:"DocumentRes"`
+	TemplatePage []TemplatePageRef `xml:"TemplatePage"`
+}
+
+// TemplatePageRef 模板页引用（Document.xml 中的声明）
+type TemplatePageRef struct {
+	ID      string `xml:"ID,attr"`
+	BaseLoc string `xml:"BaseLoc,attr"`
 }
 
 // 页面区域

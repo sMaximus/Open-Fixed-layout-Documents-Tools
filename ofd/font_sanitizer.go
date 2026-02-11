@@ -929,9 +929,13 @@ func SanitizeFontIfNeeded(data []byte) []byte {
 }
 
 // SanitizeFontWithMappings 修复字体并注入 CGTransform 的 GlyphID 映射
-// 如果 mappings 不为空，会用这些映射重建 cmap 表
+// 只在字体结构有问题或有映射需要注入时才处理，否则原样返回
 func SanitizeFontWithMappings(data []byte, mappings []GlyphMapping) []byte {
 	if !IsFontData(data) {
+		return data
+	}
+	// 没有映射且字体结构正常，直接返回原始数据
+	if len(mappings) == 0 && !NeedsSanitization(data) {
 		return data
 	}
 	fixed, err := sanitizeFontInternal(data, mappings)
@@ -940,3 +944,52 @@ func SanitizeFontWithMappings(data []byte, mappings []GlyphMapping) []byte {
 	}
 	return fixed
 }
+
+// FontIsBold 检测字体文件是否本身就是 Bold 字体
+// 通过读取 OS/2 表的 usWeightClass 和 fsSelection，以及 head 表的 macStyle 来判断
+func FontIsBold(data []byte) bool {
+	if len(data) < 12 {
+		return false
+	}
+
+	numTables := int(binary.BigEndian.Uint16(data[4:6]))
+	if numTables == 0 || 12+numTables*16 > len(data) {
+		return false
+	}
+
+	for i := 0; i < numTables; i++ {
+		off := 12 + i*16
+		if off+16 > len(data) {
+			break
+		}
+		tag := string(data[off : off+4])
+		tableOffset := int(binary.BigEndian.Uint32(data[off+8 : off+12]))
+		tableLen := int(binary.BigEndian.Uint32(data[off+12 : off+16]))
+
+		if tag == "OS/2" && tableOffset+6 <= len(data) && tableLen >= 6 {
+			weightClass := binary.BigEndian.Uint16(data[tableOffset+4 : tableOffset+6])
+			// usWeightClass >= 700 表示 Bold
+			if weightClass >= 700 {
+				return true
+			}
+			// 也检查 fsSelection bit 5 (BOLD)
+			if tableLen >= 64 && tableOffset+64 <= len(data) {
+				fsSelection := binary.BigEndian.Uint16(data[tableOffset+62 : tableOffset+64])
+				if fsSelection&0x0020 != 0 {
+					return true
+				}
+			}
+		}
+
+		if tag == "head" && tableOffset+46 <= len(data) && tableLen >= 46 {
+			macStyle := binary.BigEndian.Uint16(data[tableOffset+44 : tableOffset+46])
+			if macStyle&0x0001 != 0 {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// EmboldenFont is now in font_embolden.go with real glyph-level emboldening

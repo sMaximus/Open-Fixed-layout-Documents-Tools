@@ -242,6 +242,21 @@ func getFonts(this js.Value, args []js.Value) interface{} {
 	return string(jsonData)
 }
 
+// getPageFonts 获取指定页面用到的字体信息
+func getPageFonts(this js.Value, args []js.Value) interface{} {
+	if parser == nil {
+		return createErrorResult("请先解析OFD文件")
+	}
+	if len(args) < 1 {
+		return createErrorResult("缺少页面索引参数")
+	}
+
+	pageIndex := args[0].Int()
+	fonts := parser.GetPageFonts(pageIndex)
+	jsonData, _ := json.Marshal(fonts)
+	return string(jsonData)
+}
+
 // dumpAllFiles 导出所有文件内容（用于调试）
 func dumpAllFiles(this js.Value, args []js.Value) interface{} {
 	if parser == nil {
@@ -308,6 +323,7 @@ func main() {
 	js.Global().Set("ofdGetPageInfo", js.FuncOf(getPageInfo))
 	js.Global().Set("ofdGetDebugInfo", js.FuncOf(getDebugInfo))
 	js.Global().Set("ofdGetFonts", js.FuncOf(getFonts))
+	js.Global().Set("ofdGetPageFonts", js.FuncOf(getPageFonts))
 	js.Global().Set("ofdDumpAllFiles", js.FuncOf(dumpAllFiles))
 
 	println("OFD WASM 解析器已加载")

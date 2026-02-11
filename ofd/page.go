@@ -47,6 +47,7 @@ type TextObject struct {
 	Italic        bool          `xml:"Italic,attr"`
 	Stroke        bool          `xml:"Stroke,attr"`
 	Fill          bool          `xml:"Fill,attr"`
+	Visible       *bool         `xml:"Visible,attr"`
 	LineWidth     float64       `xml:"LineWidth,attr"`
 	CTM           string        `xml:"CTM,attr"`
 	FillColor     *Color        `xml:"FillColor"`
@@ -91,6 +92,7 @@ type PathObject struct {
 	Cap             string       `xml:"Cap,attr"`         // 线条端点样式：Butt, Round, Square
 	Stroke          bool         `xml:"Stroke,attr"`
 	Fill            bool         `xml:"Fill,attr"`
+	Visible         *bool        `xml:"Visible,attr"`
 	FillColor       *ColorOrShd  `xml:"FillColor"`
 	StrokeColor     *Color       `xml:"StrokeColor"`
 	AbbreviatedData string       `xml:"AbbreviatedData"`
@@ -103,6 +105,7 @@ type ImageObject struct {
 	ResourceID string  `xml:"ResourceID,attr"`
 	CTM        string  `xml:"CTM,attr"`
 	Alpha      int     `xml:"Alpha,attr"`
+	Visible    *bool   `xml:"Visible,attr"`
 }
 
 // Color 颜色
@@ -235,7 +238,16 @@ type SignedInfo struct {
 
 // SealRef 印章引用
 type SealRef struct {
-	BaseLoc string `xml:"BaseLoc,attr"`
+	BaseLocAttr string `xml:"BaseLoc,attr"` // BaseLoc 作为属性
+	BaseLocElem string `xml:"BaseLoc"`      // BaseLoc 作为子元素
+}
+
+// GetBaseLoc 获取 BaseLoc（兼容属性和子元素两种格式）
+func (s *SealRef) GetBaseLoc() string {
+	if s.BaseLocAttr != "" {
+		return s.BaseLocAttr
+	}
+	return s.BaseLocElem
 }
 
 // References 引用

@@ -6,6 +6,7 @@ let wasmReady = false;
 let currentPageCount = 0;
 const scale = 3.78; // mm to px
 const loadedFonts = new Map();
+const boldFontIDs = new Set(); // 字体文件本身为 Bold 的字体 ID
 
 // 懒加载相关
 let allPagesData = []; // 存储所有页面数据
@@ -28,51 +29,47 @@ function updateStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
-// 加载 OFD 嵌入字体（优化版：快速跳过无嵌入字体的情况）
-async function loadOFDFonts() {
+// 按页加载字体：只加载指定页面用到的嵌入字体
+async function loadPageFonts(pageIndex) {
   try {
-    const startTime = performance.now();
-    const fontsJson = ofdGetFonts();
-    console.log(
-      `[耗时] ofdGetFonts: ${(performance.now() - startTime).toFixed(2)}ms`,
-    );
-
+    const fontsJson = ofdGetPageFonts(pageIndex);
     const fonts = JSON.parse(fontsJson);
-    if (fonts.error) {
-      console.warn("获取字体失败:", fonts.error);
-      return;
-    }
+    if (!fonts || fonts.error || fonts.length === 0) return false;
 
-    // 快速统计有嵌入文件的字体数量
-    const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataURL);
-    console.log(
-      `发现 ${fonts.length} 个字体声明，${embeddedFonts.length} 个有嵌入文件`,
+    const newFonts = fonts.filter(
+      (f) => f.hasFile && f.dataURL && !loadedFonts.has(`OFD_Font_${f.id}`),
     );
+    if (newFonts.length === 0) return false;
 
-    // 如果没有嵌入字体，直接返回
-    if (embeddedFonts.length === 0) {
-      console.log("无嵌入字体，将使用系统字体");
-      return;
-    }
-
-    // 只加载有嵌入文件的字体
-    for (const font of embeddedFonts) {
+    for (const font of newFonts) {
       const fontName = `OFD_Font_${font.id}`;
-      if (loadedFonts.has(fontName)) continue;
       try {
         const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
         await fontFace.load();
         document.fonts.add(fontFace);
         loadedFonts.set(fontName, fontFace);
-        console.log(`字体加载成功: ${fontName} (${font.fontName})`);
+        console.log(
+          `字体加载成功: ${fontName}, isBold=${font.isBold}, hasBoldVariant=${!!font.boldDataURL}`,
+        );
+        if (font.isBold) {
+          boldFontIDs.add(font.id);
+        }
+        // 如果有 Bold 变体，注册为同名字体的 weight=bold 版本
+        if (font.boldDataURL) {
+          const boldFace = new FontFace(fontName, `url(${font.boldDataURL})`, {
+            weight: "bold",
+          });
+          await boldFace.load();
+          document.fonts.add(boldFace);
+          console.log(`Bold 变体加载成功: ${fontName}`);
+        }
       } catch (err) {
         console.warn(`字体加载失败: ${fontName}`, err);
       }
     }
-
-    console.log(`已加载 ${loadedFonts.size} 个字体`);
+    return true;
   } catch (err) {
-    console.warn("加载字体出错:", err);
+    return false;
   }
 }
 
@@ -83,6 +80,8 @@ async function parseAndRender(file) {
   }
 
   updateStatus("⏳ 解析中...");
+  loadedFonts.clear();
+  loadedFonts.clear();
   const viewer = document.getElementById("viewer");
   viewer.innerHTML =
     '<div class="empty-state loading"><p>⏳ 正在解析文档...</p></div>';
@@ -92,24 +91,27 @@ async function parseAndRender(file) {
 
     // 步骤1: 读取文件
     let stepStart = performance.now();
+    console.log("[步骤1] 开始读取文件...");
     const arrayBuffer = await file.arrayBuffer();
     const uint8Array = new Uint8Array(arrayBuffer);
     console.log(
-      `[耗时] 读取文件: ${(performance.now() - stepStart).toFixed(2)}ms, 大小: ${(uint8Array.length / 1024 / 1024).toFixed(2)}MB`,
+      `[步骤1] 读取文件完成: ${(performance.now() - stepStart).toFixed(2)}ms, 大小: ${(uint8Array.length / 1024 / 1024).toFixed(2)}MB`,
     );
 
     // 步骤2: 解析OFD文件
     stepStart = performance.now();
+    console.log("[步骤2] 开始解析OFD...");
     const resultJson = ofdParseFile(uint8Array);
     console.log(
-      `[耗时] ofdParseFile: ${(performance.now() - stepStart).toFixed(2)}ms`,
+      `[步骤2] ofdParseFile完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
     );
 
     // 步骤3: 解析JSON
     stepStart = performance.now();
+    console.log("[步骤3] 开始解析JSON...");
     const result = JSON.parse(resultJson);
     console.log(
-      `[耗时] JSON.parse: ${(performance.now() - stepStart).toFixed(2)}ms`,
+      `[步骤3] JSON.parse完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
     );
 
     if (result.error) throw new Error(result.error);
@@ -120,20 +122,12 @@ async function parseAndRender(file) {
     displayDocInfo(result);
     displayPageList(currentPageCount);
 
-    // 步骤4: 加载字体
-    updateStatus("⏳ 加载字体...");
-    stepStart = performance.now();
-    await loadOFDFonts();
-    console.log(
-      `[耗时] 加载字体: ${(performance.now() - stepStart).toFixed(2)}ms`,
-    );
-
-    // 步骤5: 渲染页面
+    // 步骤4: 渲染页面（字体在每页渲染前按需加载）
     updateStatus("⏳ 渲染页面...");
     stepStart = performance.now();
     await renderAllPages();
     console.log(
-      `[耗时] 渲染页面: ${(performance.now() - stepStart).toFixed(2)}ms`,
+      `[步骤4] 渲染页面完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
     );
 
     console.log(`[总耗时] ${(performance.now() - totalStart).toFixed(2)}ms`);
@@ -190,7 +184,6 @@ async function renderAllPages() {
   const viewer = document.getElementById("viewer");
 
   try {
-    // 获取总页数
     let stepStart = performance.now();
     const pageCount = ofdGetPageCount();
     console.log(
@@ -202,92 +195,53 @@ async function renderAllPages() {
       return;
     }
 
-    // 初始化
     allPagesData = new Array(pageCount).fill(null);
     renderedPages.clear();
     viewer.innerHTML = "";
 
-    // 只解析前 INITIAL_PAGES 页
     const initialCount = Math.min(INITIAL_PAGES, pageCount);
 
+    // 1. 解析前几页数据
+    console.log(`[渲染] 开始解析前 ${initialCount} 页数据...`);
     for (let i = 0; i < initialCount; i++) {
-      stepStart = performance.now();
+      const stepStart = performance.now();
       const pageJson = ofdRenderPage(i);
-      const parseTime = performance.now() - stepStart;
-
-      stepStart = performance.now();
-      const page = JSON.parse(pageJson);
-      const jsonTime = performance.now() - stepStart;
-
-      allPagesData[i] = page;
+      allPagesData[i] = JSON.parse(pageJson);
       console.log(
-        `[耗时] 页面${i + 1}: ofdRenderPage=${parseTime.toFixed(2)}ms, JSON=${jsonTime.toFixed(2)}ms, 路径=${page.canvasData?.paths?.length || 0}, 图片=${page.canvasData?.images?.length || 0}`,
+        `[渲染] 页面${i + 1}数据解析完成: ${(performance.now() - stepStart).toFixed(2)}ms, 路径=${allPagesData[i].canvasData?.paths?.length || 0}, 图片=${allPagesData[i].canvasData?.images?.length || 0}, 文字=${allPagesData[i].textLayer?.length || 0}`,
       );
     }
 
-    // 创建所有页面容器
-    stepStart = performance.now();
-    for (let i = 0; i < pageCount; i++) {
-      const pageContainer = document.createElement("div");
-      pageContainer.id = `page-${i}`;
-      pageContainer.className = "page-container";
-      pageContainer.dataset.pageIndex = i;
-
-      // 获取页面尺寸
-      let pxWidth, pxHeight;
-      if (allPagesData[i]) {
-        pxWidth = allPagesData[i].width * scale;
-        pxHeight = allPagesData[i].height * scale;
-      } else {
-        // 未解析的页面使用默认尺寸（A4）
-        pxWidth = 210 * scale;
-        pxHeight = 297 * scale;
-      }
-
-      pageContainer.style.cssText = `
-        width: ${pxWidth}px;
-        height: ${pxHeight}px;
-        position: relative;
-        background: #f5f5f5;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-        border-radius: 4px;
-        overflow: hidden;
-        flex-shrink: 0;
-      `;
-
-      if (i >= initialCount) {
-        // 未解析的页面显示占位符
-        const placeholder = document.createElement("div");
-        placeholder.className = "page-placeholder";
-        placeholder.style.cssText = `
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          color: #999;
-          font-size: 14px;
-        `;
-        placeholder.textContent = `第 ${i + 1} 页 (滚动加载)`;
-        pageContainer.appendChild(placeholder);
-      }
-
-      viewer.appendChild(pageContainer);
-    }
-    console.log(
-      `[耗时] 创建${pageCount}个容器: ${(performance.now() - stepStart).toFixed(2)}ms`,
-    );
-
-    // 渲染前 INITIAL_PAGES 页
+    // 2. 只创建前几页容器并立即渲染，让用户尽快看到内容
+    console.log(`[渲染] 开始创建容器并渲染...`);
     for (let i = 0; i < initialCount; i++) {
-      stepStart = performance.now();
+      const container = createPageContainer(i);
+      viewer.appendChild(container);
+      console.log(
+        `[渲染] 页面${i + 1}容器已添加到DOM, viewer.children=${viewer.children.length}, viewer.offsetHeight=${viewer.offsetHeight}`,
+      );
+
+      const stepStart = performance.now();
       await renderPageContent(i);
       console.log(
-        `[耗时] 渲染页面${i + 1}内容: ${(performance.now() - stepStart).toFixed(2)}ms`,
+        `[渲染] 页面${i + 1}内容渲染完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
       );
+
+      // 让出主线程，让浏览器有机会重绘
+      await new Promise((r) => setTimeout(r, 0));
+      console.log(`[渲染] 页面${i + 1}已让出主线程`);
     }
 
-    // 设置滚动监听
-    setupScrollListener();
+    // 3. 异步创建剩余页面容器并设置懒加载
+    if (pageCount > initialCount) {
+      requestAnimationFrame(() => {
+        for (let i = initialCount; i < pageCount; i++) {
+          viewer.appendChild(createPageContainer(i));
+        }
+        setupScrollListener();
+        console.log(`剩余 ${pageCount - initialCount} 个占位容器已创建`);
+      });
+    }
 
     console.log(`初始加载完成: 渲染了 ${initialCount} 页，共 ${pageCount} 页`);
   } catch (err) {
@@ -297,18 +251,78 @@ async function renderAllPages() {
 }
 
 /**
+ * 创建页面容器
+ */
+function createPageContainer(index) {
+  const pageContainer = document.createElement("div");
+  pageContainer.id = `page-${index}`;
+  pageContainer.className = "page-container";
+  pageContainer.dataset.pageIndex = index;
+
+  let pxWidth, pxHeight;
+  if (allPagesData[index]) {
+    pxWidth = allPagesData[index].width * scale;
+    pxHeight = allPagesData[index].height * scale;
+  } else {
+    pxWidth = 210 * scale;
+    pxHeight = 297 * scale;
+  }
+
+  pageContainer.style.cssText = `
+    width: ${pxWidth}px;
+    height: ${pxHeight}px;
+    position: relative;
+    background: #f5f5f5;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    border-radius: 4px;
+    overflow: hidden;
+    flex-shrink: 0;
+  `;
+
+  if (!allPagesData[index]) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "page-placeholder";
+    placeholder.style.cssText = `
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #999;
+      font-size: 14px;
+    `;
+    placeholder.textContent = `第 ${index + 1} 页 (滚动加载)`;
+    pageContainer.appendChild(placeholder);
+  }
+
+  return pageContainer;
+}
+
+/**
  * 渲染单个页面的内容
  */
 async function renderPageContent(pageIndex) {
+  console.log(`[renderPageContent] 开始渲染页面 ${pageIndex + 1}`);
   if (renderedPages.has(pageIndex)) {
+    console.log(`[renderPageContent] 页面 ${pageIndex + 1} 已渲染，跳过`);
     return;
   }
 
   const page = allPagesData[pageIndex];
-  if (!page) return;
+  if (!page) {
+    console.log(`[renderPageContent] 页面 ${pageIndex + 1} 数据为空`);
+    return;
+  }
 
   const pageContainer = document.getElementById(`page-${pageIndex}`);
-  if (!pageContainer) return;
+  if (!pageContainer) {
+    console.log(
+      `[renderPageContent] 页面 ${pageIndex + 1} 容器不存在 (page-${pageIndex})`,
+    );
+    return;
+  }
+  console.log(
+    `[renderPageContent] 页面 ${pageIndex + 1} 容器找到, parentNode=${pageContainer.parentNode?.id}`,
+  );
 
   // 标记为已渲染
   renderedPages.add(pageIndex);
@@ -342,6 +356,9 @@ async function renderPageContent(pageIndex) {
   `;
   pageContainer.appendChild(textLayer);
 
+  // 按需加载本页字体
+  await loadPageFonts(pageIndex);
+
   // 渲染内容
   await renderCanvasLayer(canvas, page.canvasData, page.textLayer);
   renderTransparentTextLayer(textLayer, page.textLayer);
@@ -355,17 +372,48 @@ async function renderPageContent(pageIndex) {
 function setupScrollListener() {
   const viewer = document.getElementById("viewer");
 
+  let initialized = false;
+  requestAnimationFrame(() => {
+    initialized = true;
+  });
+
+  // 懒加载队列：串行处理，每页之间让出主线程
+  const pendingPages = new Set();
+  let isProcessing = false;
+
+  async function processQueue() {
+    if (isProcessing || pendingPages.size === 0) return;
+    isProcessing = true;
+
+    while (pendingPages.size > 0) {
+      // 取最小页码（优先加载靠前的页面）
+      const pageIndex = Math.min(...pendingPages);
+      pendingPages.delete(pageIndex);
+
+      if (!renderedPages.has(pageIndex)) {
+        await loadAndRenderPage(pageIndex);
+        // 让出主线程，避免滚动卡顿
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    isProcessing = false;
+  }
+
   const observer = new IntersectionObserver(
     (entries) => {
-      entries.forEach((entry) => {
+      if (!initialized) return;
+      let hasNew = false;
+      for (const entry of entries) {
         if (entry.isIntersecting) {
           const pageIndex = parseInt(entry.target.dataset.pageIndex, 10);
           if (!isNaN(pageIndex) && !renderedPages.has(pageIndex)) {
-            // 按需解析和渲染
-            loadAndRenderPage(pageIndex);
+            pendingPages.add(pageIndex);
+            hasNew = true;
           }
         }
-      });
+      }
+      if (hasNew) processQueue();
     },
     {
       root: viewer,
@@ -375,7 +423,10 @@ function setupScrollListener() {
   );
 
   document.querySelectorAll(".page-container").forEach((container) => {
-    observer.observe(container);
+    const idx = parseInt(container.dataset.pageIndex, 10);
+    if (!renderedPages.has(idx)) {
+      observer.observe(container);
+    }
   });
 }
 
@@ -449,7 +500,16 @@ function drawText(ctx, item) {
   const TEXT_SCALE = 10; // 缩放因子
   const renderFontSize = item.fontSize / TEXT_SCALE;
   let fontFamily = item.fontFamily;
-  ctx.font = `${renderFontSize}px ${fontFamily}`;
+
+  // 构建 font 字符串：[italic] [weight] size family
+  // 如果字体文件本身已经是 Bold，不再额外加粗，避免重复加粗
+  let fontStyle = "";
+  if (item.italic) fontStyle += "italic ";
+  const fontAlreadyBold = item.fontID && boldFontIDs.has(item.fontID);
+  if (item.weight && item.weight !== 400 && !fontAlreadyBold) {
+    fontStyle += `${item.weight} `;
+  }
+  ctx.font = `${fontStyle}${renderFontSize}px ${fontFamily}`;
 
   // OFD 坐标系统：
   // - 有 CTM 时，item.y 是基线（Baseline）位置，字身在基线之上绘制
@@ -1000,6 +1060,16 @@ function renderTransparentTextLayer(container, textItems) {
       topPos = item.y - baselineOffset;
     }
 
+    // 构建 font-weight 和 font-style
+    let fontWeight = "";
+    if (item.weight && item.weight !== 400) {
+      const fontAlreadyBold = item.fontID && boldFontIDs.has(item.fontID);
+      if (!fontAlreadyBold) {
+        fontWeight = `font-weight: ${item.weight};`;
+      }
+    }
+    let fontItalic = item.italic ? "font-style: italic;" : "";
+
     // 关键样式：
     // - color: transparent 让文字透明（用户看不见）
     // - 字号缩小 10 倍，transform 放大 10 倍，与 Canvas 层一致
@@ -1010,6 +1080,8 @@ function renderTransparentTextLayer(container, textItems) {
       top: ${topPos}px;
       font-family: ${item.fontFamily};
       font-size: ${renderFontSize}px;
+      ${fontWeight}
+      ${fontItalic}
       color: transparent;
       white-space: pre;
       line-height: 1;

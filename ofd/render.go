@@ -108,6 +108,8 @@ type TextItem struct {
 	FontFamily   string    `json:"fontFamily"`
 	FontID       string    `json:"fontID"`
 	Color        string    `json:"color"`
+	Weight       int       `json:"weight,omitempty"`       // 字重 (400=normal, 700=bold)
+	Italic       bool      `json:"italic,omitempty"`       // 是否斜体
 	CTM          []float64 `json:"ctm,omitempty"`          // 变换矩阵 [a, b, c, d, e, f]
 	Stroke       bool      `json:"stroke"`                 // 是否描边
 	StrokeColor  string    `json:"strokeColor,omitempty"`  // 描边颜色
@@ -117,11 +119,13 @@ type TextItem struct {
 
 // FontInfo 字体信息
 type FontInfo struct {
-	ID         string `json:"id"`
-	FontName   string `json:"fontName"`
-	FamilyName string `json:"familyName"`
-	DataURL    string `json:"dataURL,omitempty"`
-	HasFile    bool   `json:"hasFile"`
+	ID           string `json:"id"`
+	FontName     string `json:"fontName"`
+	FamilyName   string `json:"familyName"`
+	DataURL      string `json:"dataURL,omitempty"`
+	HasFile      bool   `json:"hasFile"`
+	IsBold       bool   `json:"isBold,omitempty"`       // 字体文件本身是否为 Bold
+	BoldDataURL  string `json:"boldDataURL,omitempty"`  // Bold 变体的 data URL（仅当字体为 Regular 时生成）
 }
 
 // GlyphMapping 记录一个字体中 Unicode 码点到 Glyph ID 的映射
@@ -326,6 +330,359 @@ func (p *Parser) GetFonts() []FontInfo {
 	// 收集所有页面中每个字体的 Unicode→GlyphID 映射
 	glyphMappings := p.collectGlyphMappings()
 
+	return p.buildFontInfos(glyphMappings)
+}
+
+// GetPageFonts 获取指定页面用到的字体信息
+// 扫描该页的 CGTransform 映射和所有引用的字体，按需加载
+func (p *Parser) GetPageFonts(pageIndex int) []FontInfo {
+	p.loadResources()
+
+	if p.document == nil || pageIndex >= len(p.document.Pages.Page) {
+		return nil
+	}
+
+	// 扫描当前页的 glyph 映射（用于 CGTransform 字体修复）
+	pageMappings := p.collectPageGlyphMappings(pageIndex)
+
+	// 扫描页面中所有引用的字体 ID（包括没有 CGTransform 的）
+	pageFontIDs := p.collectPageFontIDs(pageIndex)
+	if len(pageFontIDs) == 0 && len(pageMappings) == 0 {
+		return nil
+	}
+
+	// 确保 pageMappings 中包含所有引用的字体（即使没有 glyph 映射）
+	for fontID := range pageFontIDs {
+		if _, ok := pageMappings[fontID]; !ok {
+			pageMappings[fontID] = nil
+		}
+	}
+
+	// 合并到全局已知映射中（累积）
+	if p.glyphMappingsCache == nil {
+		p.glyphMappingsCache = make(map[string][]GlyphMapping)
+		p.glyphMappingsSeen = make(map[string]map[uint32]bool)
+	}
+	for fontID, mappings := range pageMappings {
+		if p.glyphMappingsSeen[fontID] == nil {
+			p.glyphMappingsSeen[fontID] = make(map[uint32]bool)
+		}
+		for _, m := range mappings {
+			key := uint32(m.Unicode)<<16 | uint32(m.GlyphID)
+			if !p.glyphMappingsSeen[fontID][key] {
+				p.glyphMappingsSeen[fontID][key] = true
+				p.glyphMappingsCache[fontID] = append(p.glyphMappingsCache[fontID], m)
+			}
+		}
+	}
+
+	// 扫描页面中哪些字体使用了 Weight>=700
+	boldFontIDs := p.scanPageBoldFonts(pageIndex)
+
+	// 只返回本页用到的字体（用累积的映射构建）
+	return p.buildFontInfosForIDs(p.glyphMappingsCache, pageMappings, boldFontIDs)
+}
+
+// scanPageBoldFonts 扫描页面，收集使用了 Weight>=700 的字体 ID
+func (p *Parser) scanPageBoldFonts(pageIndex int) map[string]bool {
+	result := make(map[string]bool)
+
+	pagePath := p.GetPagePath(pageIndex)
+	if pagePath == "" {
+		return result
+	}
+
+	pageData, err := p.readFile(pagePath)
+	if err != nil {
+		return result
+	}
+
+	pageXML := removeNamespacePrefix(string(pageData))
+	var page Page
+	if err := xml.Unmarshal([]byte(pageXML), &page); err != nil {
+		return result
+	}
+
+	layers := page.Content.Layer
+	if len(layers) == 0 {
+		layers = page.ContentNS.Layer
+	}
+	if len(layers) == 0 {
+		layers = page.Layer
+	}
+
+	for _, layer := range layers {
+		for _, text := range layer.TextObjects {
+			if text.Weight >= 700 {
+				result[text.Font] = true
+			}
+		}
+	}
+
+	// 也扫描模板
+	for _, tplRef := range page.Template {
+		tplLayers := p.getTemplateLayers(tplRef.TemplateID)
+		for _, layer := range tplLayers {
+			for _, text := range layer.TextObjects {
+				if text.Weight >= 700 {
+					result[text.Font] = true
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// collectPageFontIDs 扫描页面，收集所有引用的字体 ID
+func (p *Parser) collectPageFontIDs(pageIndex int) map[string]bool {
+	result := make(map[string]bool)
+
+	pagePath := p.GetPagePath(pageIndex)
+	if pagePath == "" {
+		return result
+	}
+
+	pageData, err := p.readFile(pagePath)
+	if err != nil {
+		return result
+	}
+
+	pageXML := removeNamespacePrefix(string(pageData))
+	var page Page
+	if err := xml.Unmarshal([]byte(pageXML), &page); err != nil {
+		return result
+	}
+
+	layers := page.Content.Layer
+	if len(layers) == 0 {
+		layers = page.ContentNS.Layer
+	}
+	if len(layers) == 0 {
+		layers = page.Layer
+	}
+
+	for _, layer := range layers {
+		for _, text := range layer.TextObjects {
+			if text.Font != "" {
+				result[text.Font] = true
+			}
+		}
+	}
+
+	// 也扫描模板
+	for _, tplRef := range page.Template {
+		tplLayers := p.getTemplateLayers(tplRef.TemplateID)
+		for _, layer := range tplLayers {
+			for _, text := range layer.TextObjects {
+				if text.Font != "" {
+					result[text.Font] = true
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// collectPageGlyphMappings 扫描单个页面，收集字体的 Unicode→GlyphID 映射
+func (p *Parser) collectPageGlyphMappings(pageIndex int) map[string][]GlyphMapping {
+	result := make(map[string][]GlyphMapping)
+
+	pagePath := p.GetPagePath(pageIndex)
+	if pagePath == "" {
+		return result
+	}
+
+	pageData, err := p.readFile(pagePath)
+	if err != nil {
+		return result
+	}
+
+	pageXML := removeNamespacePrefix(string(pageData))
+	var page Page
+	if err := xml.Unmarshal([]byte(pageXML), &page); err != nil {
+		return result
+	}
+
+	layers := page.Content.Layer
+	if len(layers) == 0 {
+		layers = page.ContentNS.Layer
+	}
+	if len(layers) == 0 {
+		layers = page.Layer
+	}
+
+	for _, layer := range layers {
+		for _, text := range layer.TextObjects {
+			if len(text.CGTransform) == 0 {
+				continue
+			}
+			fontID := text.Font
+			for _, tc := range text.TextCode {
+				chars := []rune(tc.Content)
+				for _, cgt := range text.CGTransform {
+					if cgt.GetGlyphs() == "" {
+						continue
+					}
+					glyphIDStrs := strings.Fields(cgt.GetGlyphs())
+					codePos := cgt.CodePosition
+					codeCount := cgt.CodeCount
+					if codeCount == 0 {
+						codeCount = 1
+					}
+					for gi, gidStr := range glyphIDStrs {
+						gid, err := strconv.Atoi(gidStr)
+						if err != nil || gid <= 0 {
+							continue
+						}
+						charIdx := codePos + gi
+						if gi >= codeCount {
+							charIdx = codePos + codeCount - 1
+						}
+						if charIdx < len(chars) {
+							result[fontID] = append(result[fontID], GlyphMapping{
+								Unicode: chars[charIdx],
+								GlyphID: uint16(gid),
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 也收集模板页中的 glyph 映射
+	p.collectTemplateGlyphMappings(&page, result)
+
+	return result
+}
+
+// getTemplateLayers 获取模板的 Layer 列表（用于 glyph 映射收集）
+func (p *Parser) getTemplateLayers(templateID string) []Layer {
+	if p.document == nil {
+		return nil
+	}
+
+	docBase := ""
+	if p.ofd != nil && len(p.ofd.DocBody) > 0 {
+		docRoot := strings.TrimPrefix(p.ofd.DocBody[0].DocRoot, "/")
+		docBase = path.Dir(docRoot)
+	}
+
+	for _, tpl := range p.document.CommonData.TemplatePage {
+		if tpl.ID != templateID {
+			continue
+		}
+		tplLoc := strings.TrimPrefix(tpl.BaseLoc, "/")
+		tplPath := path.Join(docBase, tplLoc)
+
+		tplData, err := p.readFile(tplPath)
+		if err != nil {
+			return nil
+		}
+		tplXML := removeNamespacePrefix(string(tplData))
+		var tplPage Page
+		if err := xml.Unmarshal([]byte(tplXML), &tplPage); err != nil {
+			return nil
+		}
+
+		layers := tplPage.Content.Layer
+		if len(layers) == 0 {
+			layers = tplPage.ContentNS.Layer
+		}
+		if len(layers) == 0 {
+			layers = tplPage.Layer
+		}
+		return layers
+	}
+	return nil
+}
+
+// collectTemplateGlyphMappings 收集页面引用的模板中的 glyph 映射
+func (p *Parser) collectTemplateGlyphMappings(page *Page, result map[string][]GlyphMapping) {
+	if len(page.Template) == 0 || p.document == nil {
+		return
+	}
+
+	docBase := ""
+	if p.ofd != nil && len(p.ofd.DocBody) > 0 {
+		docRoot := strings.TrimPrefix(p.ofd.DocBody[0].DocRoot, "/")
+		docBase = path.Dir(docRoot)
+	}
+
+	tplPaths := make(map[string]string)
+	for _, tpl := range p.document.CommonData.TemplatePage {
+		tplLoc := strings.TrimPrefix(tpl.BaseLoc, "/")
+		tplPaths[tpl.ID] = path.Join(docBase, tplLoc)
+	}
+
+	for _, tplRef := range page.Template {
+		tplPath, ok := tplPaths[tplRef.TemplateID]
+		if !ok {
+			continue
+		}
+		tplData, err := p.readFile(tplPath)
+		if err != nil {
+			continue
+		}
+		tplXML := removeNamespacePrefix(string(tplData))
+		var tplPage Page
+		if err := xml.Unmarshal([]byte(tplXML), &tplPage); err != nil {
+			continue
+		}
+
+		tplLayers := tplPage.Content.Layer
+		if len(tplLayers) == 0 {
+			tplLayers = tplPage.ContentNS.Layer
+		}
+		if len(tplLayers) == 0 {
+			tplLayers = tplPage.Layer
+		}
+
+		for _, layer := range tplLayers {
+			for _, text := range layer.TextObjects {
+				if len(text.CGTransform) == 0 {
+					continue
+				}
+				fontID := text.Font
+				for _, tc := range text.TextCode {
+					chars := []rune(tc.Content)
+					for _, cgt := range text.CGTransform {
+						if cgt.GetGlyphs() == "" {
+							continue
+						}
+						glyphIDStrs := strings.Fields(cgt.GetGlyphs())
+						codePos := cgt.CodePosition
+						codeCount := cgt.CodeCount
+						if codeCount == 0 {
+							codeCount = 1
+						}
+						for gi, gidStr := range glyphIDStrs {
+							gid, err := strconv.Atoi(gidStr)
+							if err != nil || gid <= 0 {
+								continue
+							}
+							charIdx := codePos + gi
+							if gi >= codeCount {
+								charIdx = codePos + codeCount - 1
+							}
+							if charIdx < len(chars) {
+								result[fontID] = append(result[fontID], GlyphMapping{
+									Unicode: chars[charIdx],
+									GlyphID: uint16(gid),
+								})
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// buildFontInfos 从映射构建所有字体信息
+func (p *Parser) buildFontInfos(glyphMappings map[string][]GlyphMapping) []FontInfo {
 	fonts := make([]FontInfo, 0, len(p.fonts))
 	for id, font := range p.fonts {
 		info := FontInfo{
@@ -334,39 +691,75 @@ func (p *Parser) GetFonts() []FontInfo {
 			FamilyName: font.FamilyName,
 			HasFile:    false,
 		}
-		
-		// 检查是否有嵌入的字体文件（在 OFD 包内）
+
 		if font.FontFile != "" {
-			// 尝试加载字体文件
 			if fontData, err := p.readFile(font.FontFile); err == nil && len(fontData) > 0 {
-				// 修复字体结构问题，并注入 CGTransform 的 GlyphID 映射到 cmap
+				info.IsBold = FontIsBold(fontData)
 				mappings := glyphMappings[id]
 				fontData = SanitizeFontWithMappings(fontData, mappings)
-
 				info.HasFile = true
-				// 检测字体类型
-				mimeType := "font/ttf"
-				if len(fontData) > 4 {
-					switch {
-					case fontData[0] == 0x00 && fontData[1] == 0x01:
-						mimeType = "font/ttf"
-					case fontData[0] == 0x4F && fontData[1] == 0x54:
-						mimeType = "font/otf"
-					case fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x46:
-						mimeType = "font/woff"
-					case fontData[0] == 0x77 && fontData[1] == 0x4F && fontData[2] == 0x46 && fontData[3] == 0x32:
-						mimeType = "font/woff2"
-					}
-				}
-				info.DataURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(fontData))
+				info.DataURL = fmt.Sprintf("data:%s;base64,%s", detectFontMime(fontData), base64.StdEncoding.EncodeToString(fontData))
 				p.fontFiles[id] = fontData
 			}
 		}
 
 		fonts = append(fonts, info)
 	}
-
 	return fonts
+}
+
+// buildFontInfosForIDs 只构建指定字体 ID 的信息
+// boldFontIDs: 页面中使用了 Weight>=700 的字体 ID，需要生成 Bold 变体
+func (p *Parser) buildFontInfosForIDs(allMappings map[string][]GlyphMapping, pageMappings map[string][]GlyphMapping, boldFontIDs map[string]bool) []FontInfo {
+	fonts := make([]FontInfo, 0, len(pageMappings))
+	for fontID := range pageMappings {
+		font, ok := p.fonts[fontID]
+		if !ok {
+			continue
+		}
+
+		info := FontInfo{
+			ID:         fontID,
+			FontName:   font.FontName,
+			FamilyName: font.FamilyName,
+			HasFile:    false,
+		}
+
+		if font.FontFile != "" {
+			if fontData, err := p.readFile(font.FontFile); err == nil && len(fontData) > 0 {
+				info.IsBold = FontIsBold(fontData)
+				mappings := allMappings[fontID]
+				fontData = SanitizeFontWithMappings(fontData, mappings)
+				info.HasFile = true
+				info.DataURL = fmt.Sprintf("data:%s;base64,%s", detectFontMime(fontData), base64.StdEncoding.EncodeToString(fontData))
+				p.fontFiles[fontID] = fontData
+
+				// 如果字体本身不是 Bold，但页面中有 Weight>=700 的使用，生成 Bold 变体
+				if !info.IsBold && boldFontIDs[fontID] {
+					boldData := EmboldenFont(fontData)
+					info.BoldDataURL = fmt.Sprintf("data:%s;base64,%s", detectFontMime(boldData), base64.StdEncoding.EncodeToString(boldData))
+				}
+			}
+		}
+
+		fonts = append(fonts, info)
+	}
+	return fonts
+}
+
+// detectFontMime 检测字体 MIME 类型
+func detectFontMime(data []byte) string {
+	if len(data) > 4 {
+		switch {
+		case data[0] == 0x4F && data[1] == 0x54:
+			return "font/otf"
+		case data[0] == 0x77 && data[1] == 0x4F && data[2] == 0x46 && data[3] == 0x46:
+			return "font/woff"
+		case data[0] == 0x77 && data[1] == 0x4F && data[2] == 0x46 && data[3] == 0x32:
+			return "font/woff2"
+		}
+	}
+	return "font/ttf"
 }
 
 // collectGlyphMappings 扫描所有页面，收集每个字体的 Unicode→GlyphID 映射
@@ -381,7 +774,14 @@ func (p *Parser) collectGlyphMappings() map[string][]GlyphMapping {
 	// 用于去重
 	seen := make(map[string]map[uint32]bool) // fontID → set of (unicode<<16 | glyphID)
 
-	for pageIdx := 0; pageIdx < len(p.document.Pages.Page); pageIdx++ {
+	totalPages := len(p.document.Pages.Page)
+	maxScanPages := 50 // 最多扫描前 50 页收集映射
+	if totalPages < maxScanPages {
+		maxScanPages = totalPages
+	}
+	noNewMappingCount := 0 // 连续无新映射的页数
+
+	for pageIdx := 0; pageIdx < maxScanPages; pageIdx++ {
 		pagePath := p.GetPagePath(pageIdx)
 		if pagePath == "" {
 			continue
@@ -407,6 +807,7 @@ func (p *Parser) collectGlyphMappings() map[string][]GlyphMapping {
 			layers = page.Layer
 		}
 
+		foundNew := false
 		for _, layer := range layers {
 			for _, text := range layer.TextObjects {
 				if len(text.CGTransform) == 0 {
@@ -453,6 +854,7 @@ func (p *Parser) collectGlyphMappings() map[string][]GlyphMapping {
 								key := uint32(ch)<<16 | uint32(gid)
 								if !seen[fontID][key] {
 									seen[fontID][key] = true
+									foundNew = true
 									result[fontID] = append(result[fontID], GlyphMapping{
 										Unicode: ch,
 										GlyphID: uint16(gid),
@@ -462,6 +864,68 @@ func (p *Parser) collectGlyphMappings() map[string][]GlyphMapping {
 						}
 					}
 				}
+			}
+		}
+
+		// 也扫描该页引用的模板
+		for _, tplRef := range page.Template {
+			tplLayers := p.getTemplateLayers(tplRef.TemplateID)
+			for _, layer := range tplLayers {
+				for _, text := range layer.TextObjects {
+					if len(text.CGTransform) == 0 {
+						continue
+					}
+					fontID := text.Font
+					if seen[fontID] == nil {
+						seen[fontID] = make(map[uint32]bool)
+					}
+					for _, tc := range text.TextCode {
+						chars := []rune(tc.Content)
+						for _, cgt := range text.CGTransform {
+							if cgt.GetGlyphs() == "" {
+								continue
+							}
+							glyphIDStrs := strings.Fields(cgt.GetGlyphs())
+							codePos := cgt.CodePosition
+							codeCount := cgt.CodeCount
+							if codeCount == 0 {
+								codeCount = 1
+							}
+							for gi, gidStr := range glyphIDStrs {
+								gid, err := strconv.Atoi(gidStr)
+								if err != nil || gid <= 0 {
+									continue
+								}
+								charIdx := codePos + gi
+								if gi >= codeCount {
+									charIdx = codePos + codeCount - 1
+								}
+								if charIdx < len(chars) {
+									ch := chars[charIdx]
+									key := uint32(ch)<<16 | uint32(gid)
+									if !seen[fontID][key] {
+										seen[fontID][key] = true
+										foundNew = true
+										result[fontID] = append(result[fontID], GlyphMapping{
+											Unicode: ch,
+											GlyphID: uint16(gid),
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// 提前退出：连续 10 页没有新映射，认为已收集完整
+		if foundNew {
+			noNewMappingCount = 0
+		} else {
+			noNewMappingCount++
+			if noNewMappingCount >= 10 {
+				break
 			}
 		}
 	}
@@ -492,15 +956,6 @@ func (p *Parser) GetDebugInfo() map[string]interface{} {
 
 // extractRenderData 提取渲染数据
 func (p *Parser) extractRenderData(result *PageRenderResult, page *Page, scale float64, pageIndex int) {
-	// 合并多种可能的 Content 来源
-	layers := page.Content.Layer
-	if len(layers) == 0 {
-		layers = page.ContentNS.Layer
-	}
-	if len(layers) == 0 {
-		layers = page.Layer
-	}
-
 	// 调试信息
 	debug := &DebugInfo{
 		ImageIDs:     make([]string, 0),
@@ -512,6 +967,18 @@ func (p *Parser) extractRenderData(result *PageRenderResult, page *Page, scale f
 	}
 	for id := range p.images {
 		debug.ImageIDs = append(debug.ImageIDs, id)
+	}
+
+	// 先渲染模板层（模板通常作为背景）
+	p.renderTemplateLayers(result, page, scale, debug)
+
+	// 合并多种可能的 Content 来源
+	layers := page.Content.Layer
+	if len(layers) == 0 {
+		layers = page.ContentNS.Layer
+	}
+	if len(layers) == 0 {
+		layers = page.Layer
 	}
 
 	debug.TextDebug = append(debug.TextDebug, fmt.Sprintf("layers count: %d", len(layers)))
@@ -550,6 +1017,75 @@ func (p *Parser) extractRenderData(result *PageRenderResult, page *Page, scale f
 	p.loadStamps(result, scale, pageIndex, debug)
 
 	result.Debug = debug
+}
+
+// renderTemplateLayers 渲染页面引用的模板内容
+// OFD 中模板通过 Document.xml 的 CommonData/TemplatePage 声明，
+// 页面通过 Template 元素引用模板 ID，模板内容文件包含与普通页面相同的 Layer 结构。
+func (p *Parser) renderTemplateLayers(result *PageRenderResult, page *Page, scale float64, debug *DebugInfo) {
+	if len(page.Template) == 0 || p.document == nil {
+		return
+	}
+
+	// 构建模板 ID → 路径的映射
+	tplPaths := make(map[string]string)
+	docBase := ""
+	if p.ofd != nil && len(p.ofd.DocBody) > 0 {
+		docRoot := strings.TrimPrefix(p.ofd.DocBody[0].DocRoot, "/")
+		docBase = path.Dir(docRoot)
+	}
+	for _, tpl := range p.document.CommonData.TemplatePage {
+		tplLoc := strings.TrimPrefix(tpl.BaseLoc, "/")
+		tplPaths[tpl.ID] = path.Join(docBase, tplLoc)
+	}
+
+	for _, tplRef := range page.Template {
+		tplPath, ok := tplPaths[tplRef.TemplateID]
+		if !ok {
+			debug.TextDebug = append(debug.TextDebug, fmt.Sprintf("template %s not found in CommonData", tplRef.TemplateID))
+			continue
+		}
+
+		tplData, err := p.readFile(tplPath)
+		if err != nil {
+			debug.TextDebug = append(debug.TextDebug, fmt.Sprintf("read template %s error: %s", tplPath, err.Error()))
+			continue
+		}
+
+		tplXML := removeNamespacePrefix(string(tplData))
+		var tplPage Page
+		if err := xml.Unmarshal([]byte(tplXML), &tplPage); err != nil {
+			debug.TextDebug = append(debug.TextDebug, fmt.Sprintf("parse template %s error: %s", tplPath, err.Error()))
+			continue
+		}
+
+		// 获取模板的 layers
+		tplLayers := tplPage.Content.Layer
+		if len(tplLayers) == 0 {
+			tplLayers = tplPage.ContentNS.Layer
+		}
+		if len(tplLayers) == 0 {
+			tplLayers = tplPage.Layer
+		}
+
+		debug.TextDebug = append(debug.TextDebug, fmt.Sprintf("template %s: %d layers", tplRef.TemplateID, len(tplLayers)))
+
+		for _, layer := range tplLayers {
+			for _, img := range layer.ImageObjects {
+				debug.RequestedIDs = append(debug.RequestedIDs, img.ResourceID)
+				if _, ok := p.images[img.ResourceID]; !ok {
+					debug.MissingIDs = append(debug.MissingIDs, img.ResourceID)
+				}
+				p.extractImage(result, &img, scale)
+			}
+			for _, pathObj := range layer.PathObjects {
+				p.extractPath(result, &pathObj, scale, result.Width, result.Height)
+			}
+			for _, text := range layer.TextObjects {
+				p.extractText(result, &text, scale, debug)
+			}
+		}
+	}
 }
 
 // loadPageAnnotImages 加载页面注释中的图片
@@ -697,12 +1233,14 @@ func (p *Parser) renderAnnotImage(result *PageRenderResult, scale float64, img *
 // loadStamps 加载签章
 func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex int, debug *DebugInfo) {
 	// 收集所有印章注释
-	var allAnnots []struct {
+	type stampAnnotInfo struct {
 		annot         StampAnnot
 		sigDir        string
 		sigID         string
+		sealLoc       string // Seal BaseLoc from Signature.xml
 		isPrivateAlgo bool
 	}
+	var allAnnots []stampAnnotInfo
 
 	// 1. 查找 Signatures.xml
 	for _, file := range p.files {
@@ -757,17 +1295,53 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 				// 尝试解析签章 XML（支持多种格式）并获取算法类型
 				annots, isPrivateAlgo := p.parseSignatureXMLWithAlgo(sigData, debug)
 				sigDir := path.Dir(sigPath)
+				sealLoc := p.extractSealBaseLoc(sigData)
 
 				for _, annot := range annots {
 					debug.Stamps = append(debug.Stamps, fmt.Sprintf("annot: pageRef=%s, boundary=%s, privateAlgo=%v", annot.PageRef, annot.Boundary, isPrivateAlgo))
-					allAnnots = append(allAnnots, struct {
-						annot         StampAnnot
-						sigDir        string
-						sigID         string
-						isPrivateAlgo bool
-					}{annot, sigDir, sig.ID, isPrivateAlgo})
+					allAnnots = append(allAnnots, stampAnnotInfo{annot, sigDir, sig.ID, sealLoc, isPrivateAlgo})
 				}
 			}
+		}
+	}
+
+	// 1.5 直接扫描 Signs/Sign_X/Signature.xml（兼容无 Signatures.xml 索引的情况）
+	for _, file := range p.files {
+		lower := strings.ToLower(file)
+		if !strings.Contains(lower, "sign") || !strings.HasSuffix(lower, "signature.xml") {
+			continue
+		}
+		// 跳过已经通过 Signatures.xml 索引处理过的（即 Signatures.xml 本身）
+		if strings.HasSuffix(lower, "signatures.xml") {
+			continue
+		}
+		// 检查是否已经被上面的索引流程加载过（通过路径去重）
+		alreadyLoaded := false
+		for _, item := range allAnnots {
+			if strings.Contains(file, item.sigDir) {
+				alreadyLoaded = true
+				break
+			}
+		}
+		if alreadyLoaded {
+			continue
+		}
+
+		debug.Stamps = append(debug.Stamps, "found standalone signature: "+file)
+
+		sigData, err := p.readFile(file)
+		if err != nil {
+			debug.Stamps = append(debug.Stamps, "read error: "+err.Error())
+			continue
+		}
+
+		annots, isPrivateAlgo := p.parseSignatureXMLWithAlgo(sigData, debug)
+		sigDir := path.Dir(file)
+		sealLoc := p.extractSealBaseLoc(sigData)
+
+		for _, annot := range annots {
+			debug.Stamps = append(debug.Stamps, fmt.Sprintf("standalone annot: pageRef=%s, boundary=%s, privateAlgo=%v", annot.PageRef, annot.Boundary, isPrivateAlgo))
+			allAnnots = append(allAnnots, stampAnnotInfo{annot, sigDir, path.Base(sigDir), sealLoc, isPrivateAlgo})
 		}
 	}
 
@@ -792,20 +1366,14 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 					if annot.Type == "Stamp" || strings.Contains(strings.ToLower(annot.Subtype), "stamp") ||
 					   strings.Contains(strings.ToLower(annot.Type), "stamp") {
 						debug.Stamps = append(debug.Stamps, fmt.Sprintf("found stamp annot: %s, boundary=%s", annot.ID, annot.Appearance.Boundary))
-						allAnnots = append(allAnnots, struct {
-							annot         StampAnnot
-							sigDir        string
-							sigID         string
-							isPrivateAlgo bool
-						}{
-							StampAnnot{
+						allAnnots = append(allAnnots, stampAnnotInfo{
+							annot: StampAnnot{
 								ID:       annot.ID,
 								PageRef:  fmt.Sprintf("%d", pageIndex),
 								Boundary: annot.Appearance.Boundary,
 							},
-							path.Dir(file),
-							annot.ID,
-							false, // 页面注释默认不是私有算法
+							sigDir: path.Dir(file),
+							sigID:  annot.ID,
 						})
 					}
 				}
@@ -821,19 +1389,12 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 					boundaryMatch := boundaryRe.FindStringSubmatch(tag)
 					if len(boundaryMatch) >= 2 {
 						debug.Stamps = append(debug.Stamps, fmt.Sprintf("regex found annot: boundary=%s", boundaryMatch[1]))
-						allAnnots = append(allAnnots, struct {
-							annot         StampAnnot
-							sigDir        string
-							sigID         string
-							isPrivateAlgo bool
-						}{
-							StampAnnot{
+						allAnnots = append(allAnnots, stampAnnotInfo{
+							annot: StampAnnot{
 								PageRef:  fmt.Sprintf("%d", pageIndex),
 								Boundary: boundaryMatch[1],
 							},
-							path.Dir(file),
-							"",
-							false, // 正则提取的默认不是私有算法
+							sigDir: path.Dir(file),
 						})
 					}
 				}
@@ -873,7 +1434,7 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 				p.addPlaceholderStamp(result, scale, &item.annot, debug)
 			} else {
 				// 标准算法：加载真实印章图片
-				p.loadSealImage(result, scale, item.sigDir, item.sigID, &item.annot, debug)
+				p.loadSealImage(result, scale, item.sigDir, item.sigID, item.sealLoc, &item.annot, debug)
 			}
 		}
 	}
@@ -887,7 +1448,7 @@ func (p *Parser) loadStamps(result *PageRenderResult, scale float64, pageIndex i
 }
 
 // loadSealImage 加载印章图片
-func (p *Parser) loadSealImage(result *PageRenderResult, scale float64, sigDir string, sigID string, annot *StampAnnot, debug *DebugInfo) {
+func (p *Parser) loadSealImage(result *PageRenderResult, scale float64, sigDir string, sigID string, sealLoc string, annot *StampAnnot, debug *DebugInfo) {
 	debug.Stamps = append(debug.Stamps, "looking for seal in: "+sigDir)
 
 	// 解析边界
@@ -902,6 +1463,14 @@ func (p *Parser) loadSealImage(result *PageRenderResult, scale float64, sigDir s
 
 	// 收集所有可能的印章文件
 	var candidates []string
+
+	// 0. 如果有 Seal BaseLoc，优先使用
+	if sealLoc != "" {
+		candidates = append(candidates,
+			path.Join(sigDir, sealLoc),
+			sealLoc,
+		)
+	}
 	
 	// 1. 签章目录下的文件
 	candidates = append(candidates,
@@ -1125,6 +1694,10 @@ func (p *Parser) extractESLImage(data []byte) []byte {
 
 // extractImage 提取图片数据
 func (p *Parser) extractImage(result *PageRenderResult, img *ImageObject, scale float64) {
+	// 跳过不可见的图片对象
+	if img.Visible != nil && !*img.Visible {
+		return
+	}
 	// 使用懒加载获取图片数据
 	imgData := p.loadImageLazy(img.ResourceID)
 	if imgData == nil || len(imgData) == 0 {
@@ -1179,6 +1752,10 @@ func (p *Parser) extractImage(result *PageRenderResult, img *ImageObject, scale 
 // extractPath 提取路径数据
 // pageWidth, pageHeight: 页面尺寸（mm），用于判断闭合线段是否在边界上
 func (p *Parser) extractPath(result *PageRenderResult, pathObj *PathObject, scale float64, pageWidth, pageHeight float64) {
+	// 跳过不可见的路径对象
+	if pathObj.Visible != nil && !*pathObj.Visible {
+		return
+	}
 	if pathObj.AbbreviatedData == "" {
 		return
 	}
@@ -1550,12 +2127,24 @@ func (p *Parser) parsePattern(pattern *Pattern, scale float64) *PatternData {
 
 // extractText 提取文本数据
 func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale float64, debug *DebugInfo) {
+	// 跳过不可见的文本对象
+	if text.Visible != nil && !*text.Visible {
+		return
+	}
 	bx, by, _, _ := parseBoundary(text.Boundary)
 	
 	fontID := text.Font
 	fontFamily := "SimSun, serif"
 	if font, ok := p.fonts[text.Font]; ok {
-		if _, hasFile := p.fontFiles[text.Font]; hasFile {
+		// 检查字体是否有嵌入文件：优先检查已加载的 fontFiles，
+		// 其次检查字体声明中的 FontFile 路径（因为 GetPageFonts 可能在 RenderPage 之后才调用）
+		hasFile := false
+		if _, ok := p.fontFiles[text.Font]; ok {
+			hasFile = true
+		} else if font.FontFile != "" {
+			hasFile = true
+		}
+		if hasFile {
 			fontFamily = fmt.Sprintf("'OFD_Font_%s', '%s', '%s', SimSun, serif", text.Font, font.FontName, font.FamilyName)
 		} else {
 			fontFamily = fmt.Sprintf("'%s', '%s', SimSun, serif", font.FontName, font.FamilyName)
@@ -1652,6 +2241,12 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 			deltaX = parseDeltas(tc.DeltaX)
 		}
 
+		// 解析 DeltaY - 垂直间距数组（单位 mm）
+		var deltaY []float64
+		if tc.DeltaY != "" {
+			deltaY = parseDeltas(tc.DeltaY)
+		}
+
 		// TextCode 的 X, Y 是在文本对象坐标空间中的坐标
 		// 如果有 CTM，需要用 CTM 的缩放/旋转部分 (a,b,c,d) 变换到页面空间
 		// CTM 的平移部分 (e,f) 由前端 ctx.transform 处理，这里不包含
@@ -1680,8 +2275,9 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 					content, glyphCount, len(glyphIDs), len(deltaX), len(chars)))
 		}
 
-		// 逐字符输出，使用 DeltaX 计算位置
+		// 逐字符输出，使用 DeltaX/DeltaY 计算位置
 		currentX := tcX
+		currentY := tcY
 
 		for i, char := range chars {
 			// 检查是否是空格（Glyph ID 3 通常是空格）
@@ -1692,18 +2288,20 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 				isSpace = true
 			}
 			
-			// 只输出非空格字符，但空格的 DeltaX 仍然要计算
+			// 只输出非空格字符，但空格的 Delta 仍然要计算
 			if !isSpace {
 				result.TextLayer = append(result.TextLayer, TextItem{
 					Text:        string(char),
 					X:           currentX,
-					Y:           tcY,
+					Y:           currentY,
 					BoundaryY:   by * scale,    // Boundary 的 Y 坐标（像素）
 					TextCodeY:   tc.Y * scale,  // TextCode 的 Y 坐标（像素）
 					FontSize:    fontSize,
 					FontFamily:  fontFamily,
 					FontID:      fontID,
 					Color:       color,
+					Weight:      text.Weight,
+					Italic:      text.Italic,
 					CTM:         ctm,
 					Stroke:      text.Stroke,
 					StrokeColor: strokeColor,
@@ -1712,20 +2310,34 @@ func (p *Parser) extractText(result *PageRenderResult, text *TextObject, scale f
 				})
 			}
 
-			// 计算下一个字符的位置（包括空格的间距）
+			// 计算下一个字符的位置
+			// DeltaX/DeltaY 是对象坐标系中的偏移量，需要通过 CTM 变换
+			dx := float64(0)
+			dy := float64(0)
+
 			if i < len(deltaX) {
-				delta := deltaX[i] * scale
-				if len(ctm) >= 1 && ctm[0] != 0 {
-					delta = delta * ctm[0]
-				}
-				currentX += delta
+				dx = deltaX[i]
 			} else if i < len(chars)-1 {
 				// 没有 DeltaX，使用字号作为默认间距
-				defaultWidth := text.Size * scale
-				if len(ctm) >= 1 && ctm[0] != 0 {
-					defaultWidth = defaultWidth * ctm[0]
+				dx = text.Size
+			}
+
+			if i < len(deltaY) {
+				dy = deltaY[i]
+			}
+
+			if dx != 0 || dy != 0 {
+				if len(ctm) >= 4 {
+					// CTM 变换 delta: newDx = a*dx + c*dy, newDy = b*dx + d*dy
+					a, b, c, d := ctm[0], ctm[1], ctm[2], ctm[3]
+					tdx := a*dx + c*dy
+					tdy := b*dx + d*dy
+					currentX += tdx * scale
+					currentY += tdy * scale
+				} else {
+					currentX += dx * scale
+					currentY += dy * scale
 				}
-				currentX += defaultWidth
 			}
 		}
 	}
@@ -2181,11 +2793,39 @@ func (p *Parser) parseSignatureXML(data []byte, debug *DebugInfo) []StampAnnot {
 	return annots
 }
 
+// extractSealBaseLoc 从 Signature.xml 中提取 Seal 的 BaseLoc
+func (p *Parser) extractSealBaseLoc(data []byte) string {
+	content := removeNamespacePrefix(string(data))
+
+	// 尝试 struct 解析
+	var sigXML SignatureXML
+	if err := xml.Unmarshal([]byte(content), &sigXML); err == nil {
+		if loc := sigXML.SignedInfo.Seal.GetBaseLoc(); loc != "" {
+			return loc
+		}
+	}
+
+	// 正则兜底：匹配 <Seal><BaseLoc>xxx</BaseLoc></Seal> 或 <Seal BaseLoc="xxx"/>
+	re := regexp.MustCompile(`(?i)<(?:\w+:)?BaseLoc[^>]*>([^<]+)</(?:\w+:)?BaseLoc>`)
+	if m := re.FindStringSubmatch(string(data)); len(m) >= 2 {
+		return strings.TrimSpace(m[1])
+	}
+	re2 := regexp.MustCompile(`(?i)<(?:\w+:)?Seal[^>]*BaseLoc\s*=\s*"([^"]*)"`)
+	if m := re2.FindStringSubmatch(string(data)); len(m) >= 2 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
 // parseSignatureXMLWithAlgo 解析签章XML并返回算法类型
 func (p *Parser) parseSignatureXMLWithAlgo(data []byte, debug *DebugInfo) ([]StampAnnot, bool) {
 	var annots []StampAnnot
 	content := string(data)
 	isPrivateAlgo := false
+
+	// 移除命名空间前缀，统一处理
+	cleanedContent := removeNamespacePrefix(content)
+	cleanedData := []byte(cleanedContent)
 
 	// 识别签名算法
 	methodRe := regexp.MustCompile(`<(?:\w+:)?SignatureMethod[^>]*>([^<]+)</(?:\w+:)?SignatureMethod>`)
@@ -2213,9 +2853,9 @@ func (p *Parser) parseSignatureXMLWithAlgo(data []byte, debug *DebugInfo) ([]Sta
 	}
 	debug.Stamps = append(debug.Stamps, "sig xml preview: "+preview)
 
-	// 尝试标准格式
+	// 尝试标准格式（使用去除命名空间前缀的数据）
 	var sigXML SignatureXML
-	if err := xml.Unmarshal(data, &sigXML); err == nil {
+	if err := xml.Unmarshal(cleanedData, &sigXML); err == nil {
 		annots = append(annots, sigXML.SignedInfo.StampAnnot...)
 		annots = append(annots, sigXML.SignedInfo.StampAnnotNS...)
 		annots = append(annots, sigXML.SignedInfo.StampAnnotOFD...)
@@ -2225,7 +2865,7 @@ func (p *Parser) parseSignatureXMLWithAlgo(data []byte, debug *DebugInfo) ([]Sta
 		}
 	}
 
-	// 尝试带命名空间的格式
+	// 尝试带命名空间的格式（使用原始数据）
 	var sigXMLNS SignatureXMLNS
 	if err := xml.Unmarshal(data, &sigXMLNS); err == nil {
 		annots = append(annots, sigXMLNS.SignedInfo.StampAnnot...)

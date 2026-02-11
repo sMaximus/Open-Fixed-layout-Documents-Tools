@@ -30,6 +30,9 @@ type Parser struct {
 	fonts     map[string]Font
 	fontFiles map[string][]byte
 	images    map[string][]byte
+	// 按页累积的 glyph 映射缓存
+	glyphMappingsCache map[string][]GlyphMapping
+	glyphMappingsSeen  map[string]map[uint32]bool
 }
 
 // NewParser 创建解析器
