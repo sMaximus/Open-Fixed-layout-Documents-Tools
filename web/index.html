@@ -119,19 +119,25 @@
         color: red;
         border-radius: 4px;
       }
-      /* 透明文本层 - 用于文字选择 */
-      .text-layer {
+      /* 透明文本蒙层 - 用于浏览器搜索 */
+      .text-overlay {
+        pointer-events: none;
+      }
+      .text-overlay span {
         pointer-events: auto;
       }
-      .text-layer span {
-        pointer-events: auto;
-      }
-      /* 选中文字时的高亮效果 */
-      .text-layer span::selection {
+      /* 搜索高亮效果 */
+      .text-overlay span::selection {
         background: rgba(0, 100, 255, 0.3);
       }
-      .text-layer span::-moz-selection {
+      .text-overlay span::-moz-selection {
         background: rgba(0, 100, 255, 0.3);
+      }
+      /* SVG 层 */
+      .svg-layer svg {
+        display: block;
+        width: 100%;
+        height: 100%;
       }
       .empty-state {
         color: #666;

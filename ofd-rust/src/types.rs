@@ -59,6 +59,17 @@ pub struct CommonData {
     pub public_res: Vec<String>,
     #[serde(rename = "DocumentRes", default)]
     pub document_res: Vec<String>,
+    #[serde(rename = "TemplatePage", default)]
+    pub template_page: Vec<TemplatePageRef>,
+}
+
+/// 模板页引用（Document.xml 中的声明）
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct TemplatePageRef {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@BaseLoc", default)]
+    pub base_loc: String,
 }
 
 /// 页面区域

@@ -6,6 +6,7 @@ mod types;
 mod page;
 mod parser;
 mod render;
+mod svg_render;
 
 use wasm_bindgen::prelude::*;
 use serde_json;
@@ -14,6 +15,7 @@ pub use types::*;
 pub use page::*;
 pub use parser::*;
 pub use render::*;
+pub use svg_render::*;
 
 /// WASM 导出的 OFD 解析器
 #[wasm_bindgen]
@@ -60,15 +62,10 @@ impl OFDParser {
         })).unwrap_or(JsValue::NULL)
     }
 
-    /// 渲染页面
+    /// 渲染页面（Canvas 模式）
     pub fn render_page(&mut self, index: usize) -> JsValue {
         let result = self.parser.render_page(index);
         
-        // 调试输出
-        web_sys::console::log_1(&format!("Rust render_page: index={}, width={}, height={}", 
-            result.page_index, result.width, result.height).into());
-        
-        // 手动构建 JS 对象以确保正确的属性名
         let obj = js_sys::Object::new();
         let _ = js_sys::Reflect::set(&obj, &"pageIndex".into(), &JsValue::from(result.page_index as u32));
         let _ = js_sys::Reflect::set(&obj, &"width".into(), &JsValue::from(result.width));
@@ -84,6 +81,12 @@ impl OFDParser {
         obj.into()
     }
 
+    /// 渲染页面为 SVG
+    pub fn render_page_svg(&mut self, index: usize) -> JsValue {
+        let result = self.parser.render_page_svg(index);
+        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    }
+
     /// 获取字体信息
     pub fn get_fonts(&mut self) -> JsValue {
         let fonts = self.parser.get_fonts();
@@ -94,6 +97,14 @@ impl OFDParser {
     pub fn get_files(&self) -> JsValue {
         let files = self.parser.get_files();
         serde_wasm_bindgen::to_value(&files).unwrap_or(JsValue::NULL)
+    }
+
+    /// 读取OFD包内文件的文本内容（用于查看XML）
+    pub fn read_file_text(&self, name: &str) -> JsValue {
+        match self.parser.read_file(name) {
+            Ok(data) => JsValue::from_str(&String::from_utf8_lossy(&data)),
+            Err(e) => JsValue::from_str(&format!("读取失败: {}", e)),
+        }
     }
 
     /// 获取文档信息

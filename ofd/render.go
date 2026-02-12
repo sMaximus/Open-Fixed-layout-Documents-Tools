@@ -14,13 +14,15 @@ import (
 
 // PageRenderResult 页面渲染结果
 type PageRenderResult struct {
-	PageIndex   int               `json:"pageIndex"`
-	Width       float64           `json:"width"`
-	Height      float64           `json:"height"`
-	CanvasData  *CanvasRenderData `json:"canvasData"`
-	TextLayer   []TextItem        `json:"textLayer"`
-	Error       string            `json:"error,omitempty"`
-	Debug       *DebugInfo        `json:"debug,omitempty"`
+	PageIndex    int               `json:"pageIndex"`
+	Width        float64           `json:"width"`
+	Height       float64           `json:"height"`
+	CanvasData   *CanvasRenderData `json:"canvasData,omitempty"`
+	TextLayer    []TextItem        `json:"textLayer,omitempty"`
+	SVG          string            `json:"svg,omitempty"`          // SVG 渲染结果
+	TextOverlay  []TextOverlayItem `json:"textOverlay,omitempty"`  // 文本蒙层（用于搜索）
+	Error        string            `json:"error,omitempty"`
+	Debug        *DebugInfo        `json:"debug,omitempty"`
 }
 
 // DebugInfo 调试信息
@@ -2760,11 +2762,6 @@ func convertOFDPathToCanvasWithCTM(data string, scale float64, offsetX, offsetY 
 	jsonData, _ := json.Marshal(commands)
 	return string(jsonData)
 }
-// convertOFDPathToCanvas 转换OFD路径命令为Canvas命令JSON（向后兼容）
-func convertOFDPathToCanvas(data string, scale float64, offsetX, offsetY float64) string {
-	return convertOFDPathToCanvasWithCTM(data, scale, offsetX, offsetY, nil, 0, 0)
-}
-
 // parseBoundary 解析边界框（Scanner 方式）
 func parseBoundary(boundary string) (x, y, w, h float64) {
 	scanner := newNumberScanner(boundary)
@@ -2785,12 +2782,6 @@ func parseColor(value string) string {
 		return fmt.Sprintf("rgb(%d,%d,%d)", int(r), int(g), int(b))
 	}
 	return "#000"
-}
-
-// parseSignatureXML 解析签章XML，支持多种格式
-func (p *Parser) parseSignatureXML(data []byte, debug *DebugInfo) []StampAnnot {
-	annots, _ := p.parseSignatureXMLWithAlgo(data, debug)
-	return annots
 }
 
 // extractSealBaseLoc 从 Signature.xml 中提取 Seal 的 BaseLoc

@@ -916,18 +916,6 @@ func NeedsSanitization(data []byte) bool {
 	return !ordered || !hasOS2 || !hasCmap || !hasName || !hasPost || headOS2Mismatch
 }
 
-// SanitizeFontIfNeeded 仅在需要时修复字体
-func SanitizeFontIfNeeded(data []byte) []byte {
-	if !IsFontData(data) {
-		return data
-	}
-	fixed, err := SanitizeFont(data)
-	if err != nil {
-		return data
-	}
-	return fixed
-}
-
 // SanitizeFontWithMappings 修复字体并注入 CGTransform 的 GlyphID 映射
 // 只在字体结构有问题或有映射需要注入时才处理，否则原样返回
 func SanitizeFontWithMappings(data []byte, mappings []GlyphMapping) []byte {

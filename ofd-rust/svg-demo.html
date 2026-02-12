@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OFD SVG 查看器 (Rust WASM)</title>
+    <link rel="stylesheet" href="svg-demo.css" />
+  </head>
+  <body>
+    <div class="header">
+      <h1>📄 OFD SVG 查看器 (Rust)</h1>
+      <button
+        class="upload-btn"
+        onclick="document.getElementById('fileInput').click()"
+      >
+        选择 OFD 文件
+      </button>
+      <input type="file" id="fileInput" accept=".ofd" />
+      <button
+        class="xml-btn"
+        id="xmlBtn"
+        style="display: none"
+        onclick="window.showXmlModal()"
+      >
+        查看 XML
+      </button>
+      <span class="status" id="status">⏳ 加载 WASM...</span>
+    </div>
+
+    <!-- XML 查看弹窗 -->
+    <div class="modal-overlay" id="xmlModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>📂 OFD 文件结构</h3>
+          <button class="modal-close" onclick="window.hideXmlModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-sidebar" id="xmlFileList"></div>
+          <div class="modal-content">
+            <div class="modal-content-header" id="xmlFileName">
+              选择左侧文件查看
+            </div>
+            <pre class="xml-content" id="xmlContent"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="main-container">
+      <div class="sidebar">
+        <h3>📋 文档信息</h3>
+        <div id="docInfo">
+          <div class="info-item">
+            <span class="info-label">状态</span
+            ><span class="info-value">未加载</span>
+          </div>
+        </div>
+        <h3 style="margin-top: 20px">📑 页面列表</h3>
+        <div class="page-list" id="pageList"></div>
+      </div>
+      <div class="viewer" id="viewer">
+        <div class="empty-state">
+          <p style="font-size: 48px">📄</p>
+          <p>请选择 OFD 文件</p>
+          <p style="font-size: 12px; color: #555">支持拖拽文件到页面</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="svg-demo.js"></script>
+  </body>
+</html>

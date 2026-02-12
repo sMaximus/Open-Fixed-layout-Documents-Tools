@@ -1,18 +1,16 @@
-// OFD WASM 解析器 - 双层渲染架构
-// 底层 Canvas：渲染版式、图片、矢量、印章
-// 上层 HTML：透明文本层，用于文字选择
+// OFD WASM 解析器 - SVG 渲染架构
+// SVG 层：渲染版式、图片、矢量、文字（freetype 渲染为图片）
+// 蒙层：透明文本层，用于浏览器搜索（Ctrl+F）
 
 let wasmReady = false;
 let currentPageCount = 0;
 const scale = 3.78; // mm to px
-const loadedFonts = new Map();
-const boldFontIDs = new Set(); // 字体文件本身为 Bold 的字体 ID
 
 // 懒加载相关
-let allPagesData = []; // 存储所有页面数据
-const renderedPages = new Set(); // 已渲染的页面索引
-const INITIAL_PAGES = 3; // 首次渲染页数
-const PRELOAD_THRESHOLD = 200; // 预加载阈值（像素）
+let allPagesData = [];
+const renderedPages = new Set();
+const INITIAL_PAGES = 3;
+const PRELOAD_THRESHOLD = 200;
 
 async function initWasm() {
   const go = new Go();
@@ -29,50 +27,6 @@ function updateStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
-// 按页加载字体：只加载指定页面用到的嵌入字体
-async function loadPageFonts(pageIndex) {
-  try {
-    const fontsJson = ofdGetPageFonts(pageIndex);
-    const fonts = JSON.parse(fontsJson);
-    if (!fonts || fonts.error || fonts.length === 0) return false;
-
-    const newFonts = fonts.filter(
-      (f) => f.hasFile && f.dataURL && !loadedFonts.has(`OFD_Font_${f.id}`),
-    );
-    if (newFonts.length === 0) return false;
-
-    for (const font of newFonts) {
-      const fontName = `OFD_Font_${font.id}`;
-      try {
-        const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
-        await fontFace.load();
-        document.fonts.add(fontFace);
-        loadedFonts.set(fontName, fontFace);
-        console.log(
-          `字体加载成功: ${fontName}, isBold=${font.isBold}, hasBoldVariant=${!!font.boldDataURL}`,
-        );
-        if (font.isBold) {
-          boldFontIDs.add(font.id);
-        }
-        // 如果有 Bold 变体，注册为同名字体的 weight=bold 版本
-        if (font.boldDataURL) {
-          const boldFace = new FontFace(fontName, `url(${font.boldDataURL})`, {
-            weight: "bold",
-          });
-          await boldFace.load();
-          document.fonts.add(boldFace);
-          console.log(`Bold 变体加载成功: ${fontName}`);
-        }
-      } catch (err) {
-        console.warn(`字体加载失败: ${fontName}`, err);
-      }
-    }
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
 async function parseAndRender(file) {
   if (!wasmReady) {
     updateStatus("⏳ 等待 WASM 加载...");
@@ -80,8 +34,6 @@ async function parseAndRender(file) {
   }
 
   updateStatus("⏳ 解析中...");
-  loadedFonts.clear();
-  loadedFonts.clear();
   const viewer = document.getElementById("viewer");
   viewer.innerHTML =
     '<div class="empty-state loading"><p>⏳ 正在解析文档...</p></div>';
@@ -89,46 +41,19 @@ async function parseAndRender(file) {
   try {
     const totalStart = performance.now();
 
-    // 步骤1: 读取文件
-    let stepStart = performance.now();
-    console.log("[步骤1] 开始读取文件...");
     const arrayBuffer = await file.arrayBuffer();
     const uint8Array = new Uint8Array(arrayBuffer);
-    console.log(
-      `[步骤1] 读取文件完成: ${(performance.now() - stepStart).toFixed(2)}ms, 大小: ${(uint8Array.length / 1024 / 1024).toFixed(2)}MB`,
-    );
 
-    // 步骤2: 解析OFD文件
-    stepStart = performance.now();
-    console.log("[步骤2] 开始解析OFD...");
     const resultJson = ofdParseFile(uint8Array);
-    console.log(
-      `[步骤2] ofdParseFile完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
-    );
-
-    // 步骤3: 解析JSON
-    stepStart = performance.now();
-    console.log("[步骤3] 开始解析JSON...");
     const result = JSON.parse(resultJson);
-    console.log(
-      `[步骤3] JSON.parse完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
-    );
-
     if (result.error) throw new Error(result.error);
 
     currentPageCount = result.PageCount || 0;
-    console.log(`[信息] 文档页数: ${currentPageCount}`);
-
     displayDocInfo(result);
     displayPageList(currentPageCount);
 
-    // 步骤4: 渲染页面（字体在每页渲染前按需加载）
     updateStatus("⏳ 渲染页面...");
-    stepStart = performance.now();
     await renderAllPages();
-    console.log(
-      `[步骤4] 渲染页面完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
-    );
 
     console.log(`[总耗时] ${(performance.now() - totalStart).toFixed(2)}ms`);
     updateStatus(`✅ 已加载 ${currentPageCount} 页`);
@@ -166,30 +91,19 @@ function displayPageList(count) {
   const container = document.getElementById("pageList");
   let html = "";
   for (let i = 0; i < count; i++) {
-    html += `<div class="page-item" data-page="${i}" onclick="scrollToPage(${i})">第 ${
-      i + 1
-    } 页</div>`;
+    html += `<div class="page-item" data-page="${i}" onclick="scrollToPage(${i})">第 ${i + 1} 页</div>`;
   }
   container.innerHTML =
     html || '<div style="color:#666;font-size:13px;">无页面</div>';
 }
 
-// ============ 双层渲染架构 ============
+// ============ SVG 渲染架构 ============
 
-/**
- * 渲染页面（懒加载模式）
- * 只解析和渲染前3页，其余页面滚动时按需加载
- */
 async function renderAllPages() {
   const viewer = document.getElementById("viewer");
 
   try {
-    let stepStart = performance.now();
     const pageCount = ofdGetPageCount();
-    console.log(
-      `[耗时] ofdGetPageCount: ${(performance.now() - stepStart).toFixed(2)}ms, 页数: ${pageCount}`,
-    );
-
     if (pageCount <= 0) {
       viewer.innerHTML = `<div class="empty-state"><p>❌ 无法获取页数</p></div>`;
       return;
@@ -201,58 +115,39 @@ async function renderAllPages() {
 
     const initialCount = Math.min(INITIAL_PAGES, pageCount);
 
-    // 1. 解析前几页数据
-    console.log(`[渲染] 开始解析前 ${initialCount} 页数据...`);
+    // 解析前几页
     for (let i = 0; i < initialCount; i++) {
       const stepStart = performance.now();
-      const pageJson = ofdRenderPage(i);
+      const pageJson = ofdRenderPageSVG(i);
       allPagesData[i] = JSON.parse(pageJson);
       console.log(
-        `[渲染] 页面${i + 1}数据解析完成: ${(performance.now() - stepStart).toFixed(2)}ms, 路径=${allPagesData[i].canvasData?.paths?.length || 0}, 图片=${allPagesData[i].canvasData?.images?.length || 0}, 文字=${allPagesData[i].textLayer?.length || 0}`,
+        `[渲染] 页面${i + 1} SVG 数据解析完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
       );
     }
 
-    // 2. 只创建前几页容器并立即渲染，让用户尽快看到内容
-    console.log(`[渲染] 开始创建容器并渲染...`);
+    // 创建容器并渲染
     for (let i = 0; i < initialCount; i++) {
       const container = createPageContainer(i);
       viewer.appendChild(container);
-      console.log(
-        `[渲染] 页面${i + 1}容器已添加到DOM, viewer.children=${viewer.children.length}, viewer.offsetHeight=${viewer.offsetHeight}`,
-      );
-
-      const stepStart = performance.now();
       await renderPageContent(i);
-      console.log(
-        `[渲染] 页面${i + 1}内容渲染完成: ${(performance.now() - stepStart).toFixed(2)}ms`,
-      );
-
-      // 让出主线程，让浏览器有机会重绘
       await new Promise((r) => setTimeout(r, 0));
-      console.log(`[渲染] 页面${i + 1}已让出主线程`);
     }
 
-    // 3. 异步创建剩余页面容器并设置懒加载
+    // 剩余页面懒加载
     if (pageCount > initialCount) {
       requestAnimationFrame(() => {
         for (let i = initialCount; i < pageCount; i++) {
           viewer.appendChild(createPageContainer(i));
         }
         setupScrollListener();
-        console.log(`剩余 ${pageCount - initialCount} 个占位容器已创建`);
       });
     }
-
-    console.log(`初始加载完成: 渲染了 ${initialCount} 页，共 ${pageCount} 页`);
   } catch (err) {
     viewer.innerHTML = `<div class="empty-state"><p>❌ 渲染失败: ${err.message}</p></div>`;
     console.error(err);
   }
 }
 
-/**
- * 创建页面容器
- */
 function createPageContainer(index) {
   const pageContainer = document.createElement("div");
   pageContainer.id = `page-${index}`;
@@ -283,12 +178,9 @@ function createPageContainer(index) {
     const placeholder = document.createElement("div");
     placeholder.className = "page-placeholder";
     placeholder.style.cssText = `
-      position: absolute;
-      top: 50%;
-      left: 50%;
+      position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      color: #999;
-      font-size: 14px;
+      color: #999; font-size: 14px;
     `;
     placeholder.textContent = `第 ${index + 1} 页 (滚动加载)`;
     pageContainer.appendChild(placeholder);
@@ -297,34 +189,15 @@ function createPageContainer(index) {
   return pageContainer;
 }
 
-/**
- * 渲染单个页面的内容
- */
 async function renderPageContent(pageIndex) {
-  console.log(`[renderPageContent] 开始渲染页面 ${pageIndex + 1}`);
-  if (renderedPages.has(pageIndex)) {
-    console.log(`[renderPageContent] 页面 ${pageIndex + 1} 已渲染，跳过`);
-    return;
-  }
+  if (renderedPages.has(pageIndex)) return;
 
   const page = allPagesData[pageIndex];
-  if (!page) {
-    console.log(`[renderPageContent] 页面 ${pageIndex + 1} 数据为空`);
-    return;
-  }
+  if (!page) return;
 
   const pageContainer = document.getElementById(`page-${pageIndex}`);
-  if (!pageContainer) {
-    console.log(
-      `[renderPageContent] 页面 ${pageIndex + 1} 容器不存在 (page-${pageIndex})`,
-    );
-    return;
-  }
-  console.log(
-    `[renderPageContent] 页面 ${pageIndex + 1} 容器找到, parentNode=${pageContainer.parentNode?.id}`,
-  );
+  if (!pageContainer) return;
 
-  // 标记为已渲染
   renderedPages.add(pageIndex);
 
   if (page.error) {
@@ -335,68 +208,109 @@ async function renderPageContent(pageIndex) {
   const pxWidth = page.width * scale;
   const pxHeight = page.height * scale;
 
-  // 清空并更新容器
   pageContainer.innerHTML = "";
   pageContainer.style.background = "#fff";
   pageContainer.style.width = `${pxWidth}px`;
   pageContainer.style.height = `${pxHeight}px`;
 
-  // Canvas 层
-  const canvas = document.createElement("canvas");
-  canvas.width = pxWidth;
-  canvas.height = pxHeight;
-  canvas.style.cssText = `position: absolute; left: 0; top: 0; z-index: 0;`;
-  pageContainer.appendChild(canvas); // 文本层
-  const textLayer = document.createElement("div");
-  textLayer.className = "text-layer";
-  textLayer.style.cssText = `
-    position: absolute; left: 0; top: 0;
-    width: 100%; height: 100%;
-    z-index: 1; overflow: hidden; pointer-events: auto;
-  `;
-  pageContainer.appendChild(textLayer);
+  // SVG 层
+  if (page.svg) {
+    const svgContainer = document.createElement("div");
+    svgContainer.className = "svg-layer";
+    svgContainer.style.cssText = `
+      position: absolute; left: 0; top: 0;
+      width: 100%; height: 100%;
+      z-index: 0;
+    `;
+    svgContainer.innerHTML = page.svg;
+    pageContainer.appendChild(svgContainer);
 
-  // 按需加载本页字体
-  await loadPageFonts(pageIndex);
+    // 调试：统计 SVG 中的元素
+    const svgEl = svgContainer.querySelector("svg");
+    if (svgEl) {
+      const paths = svgEl.querySelectorAll("path").length;
+      const images = svgEl.querySelectorAll("image").length;
+      console.log(
+        `[SVG] 页面${pageIndex + 1}: paths=${paths}, images=${images}, svgSize=${page.svg.length}`,
+      );
+    }
+  } else {
+    console.warn(`[SVG] 页面${pageIndex + 1}: 没有 SVG 数据`);
+  }
 
-  // 渲染内容
-  await renderCanvasLayer(canvas, page.canvasData, page.textLayer);
-  renderTransparentTextLayer(textLayer, page.textLayer);
+  // 调试：输出后端调试信息
+  if (page.debug) {
+    if (page.debug.textDebug && page.debug.textDebug.length > 0) {
+      console.log(`[TextDebug] 页面${pageIndex + 1}:`, page.debug.textDebug);
+    }
+  }
 
-  console.log(`页面 ${pageIndex + 1} 渲染完成`);
+  // 调试：输出 textOverlay 统计
+  console.log(
+    `[TextOverlay] 页面${pageIndex + 1}: ${page.textOverlay ? page.textOverlay.length : 0} 项`,
+  );
+
+  // 文本蒙层（用于浏览器搜索 Ctrl+F）
+  if (page.textOverlay && page.textOverlay.length > 0) {
+    const textLayer = document.createElement("div");
+    textLayer.className = "text-overlay";
+    textLayer.style.cssText = `
+      position: absolute; left: 0; top: 0;
+      width: 100%; height: 100%;
+      z-index: 1; overflow: hidden;
+      pointer-events: none;
+    `;
+
+    for (const item of page.textOverlay) {
+      const span = document.createElement("span");
+      span.textContent = item.text;
+      span.style.cssText = `
+        position: absolute;
+        left: ${item.x}px;
+        top: ${item.y}px;
+        width: ${item.width}px;
+        height: ${item.height}px;
+        font-size: ${item.height * 0.8}px;
+        color: transparent;
+        white-space: nowrap;
+        overflow: hidden;
+        line-height: ${item.height}px;
+        pointer-events: auto;
+        user-select: text;
+        -webkit-user-select: text;
+      `;
+      textLayer.appendChild(span);
+    }
+
+    pageContainer.appendChild(textLayer);
+  }
+
+  console.log(`页面 ${pageIndex + 1} SVG 渲染完成`);
 }
 
-/**
- * 设置滚动监听，实现懒加载
- */
+// ============ 懒加载 ============
+
 function setupScrollListener() {
   const viewer = document.getElementById("viewer");
-
   let initialized = false;
   requestAnimationFrame(() => {
     initialized = true;
   });
 
-  // 懒加载队列：串行处理，每页之间让出主线程
   const pendingPages = new Set();
   let isProcessing = false;
 
   async function processQueue() {
     if (isProcessing || pendingPages.size === 0) return;
     isProcessing = true;
-
     while (pendingPages.size > 0) {
-      // 取最小页码（优先加载靠前的页面）
       const pageIndex = Math.min(...pendingPages);
       pendingPages.delete(pageIndex);
-
       if (!renderedPages.has(pageIndex)) {
         await loadAndRenderPage(pageIndex);
-        // 让出主线程，避免滚动卡顿
         await new Promise((r) => setTimeout(r, 0));
       }
     }
-
     isProcessing = false;
   }
 
@@ -415,11 +329,7 @@ function setupScrollListener() {
       }
       if (hasNew) processQueue();
     },
-    {
-      root: viewer,
-      rootMargin: `${PRELOAD_THRESHOLD}px`,
-      threshold: 0,
-    },
+    { root: viewer, rootMargin: `${PRELOAD_THRESHOLD}px`, threshold: 0 },
   );
 
   document.querySelectorAll(".page-container").forEach((container) => {
@@ -430,670 +340,19 @@ function setupScrollListener() {
   });
 }
 
-/**
- * 按需加载并渲染页面
- */
 async function loadAndRenderPage(pageIndex) {
   if (renderedPages.has(pageIndex)) return;
   if (allPagesData[pageIndex]) {
-    // 已解析但未渲染
     await renderPageContent(pageIndex);
     return;
   }
 
-  console.log(`按需解析页面 ${pageIndex + 1}...`);
-
   try {
-    const pageJson = ofdRenderPage(pageIndex);
-    const page = JSON.parse(pageJson);
-    allPagesData[pageIndex] = page;
+    const pageJson = ofdRenderPageSVG(pageIndex);
+    allPagesData[pageIndex] = JSON.parse(pageJson);
     await renderPageContent(pageIndex);
   } catch (err) {
     console.error(`加载页面 ${pageIndex + 1} 失败:`, err);
-  }
-}
-
-// ============ 底层 Canvas 渲染 ============
-// 渲染顺序：背景 → 路径 → 文字 → 图片（印章在最上层）
-
-async function renderCanvasLayer(canvas, canvasData, textLayer) {
-  const ctx = canvas.getContext("2d");
-
-  // 1. 白色背景
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  if (!canvasData) canvasData = {};
-
-  // 2. 渲染路径（矢量图形、线条）- 需要 await 因为 Pattern 是异步的
-  if (canvasData.paths) {
-    for (const pathData of canvasData.paths) {
-      await drawPath(ctx, pathData);
-    }
-  }
-
-  // 4. 渲染图片（印章等，最上层）
-  if (canvasData.images && canvasData.images.length > 0) {
-    console.log(`渲染 ${canvasData.images.length} 个图片/印章`);
-    for (const img of canvasData.images) {
-      console.log(
-        `图片: x=${img.x}, y=${img.y}, w=${img.width}, h=${img.height}`,
-      );
-      await drawImage(ctx, img);
-    }
-  }
-
-  // 3. 渲染文字
-  if (textLayer && textLayer.length > 0) {
-    for (const item of textLayer) {
-      drawText(ctx, item);
-    }
-  }
-}
-
-// Canvas 绘制文字
-// 优化：将 fontSize 缩小 10 倍，transform 放大 10 倍
-// 这样可以避免大字号下的子像素舍入误差，提升文字渲染精度
-function drawText(ctx, item) {
-  ctx.save();
-
-  const TEXT_SCALE = 10; // 缩放因子
-  const renderFontSize = item.fontSize / TEXT_SCALE;
-  let fontFamily = item.fontFamily;
-
-  // 构建 font 字符串：[italic] [weight] size family
-  // 如果字体文件本身已经是 Bold，不再额外加粗，避免重复加粗
-  let fontStyle = "";
-  if (item.italic) fontStyle += "italic ";
-  const fontAlreadyBold = item.fontID && boldFontIDs.has(item.fontID);
-  if (item.weight && item.weight !== 400 && !fontAlreadyBold) {
-    fontStyle += `${item.weight} `;
-  }
-  ctx.font = `${fontStyle}${renderFontSize}px ${fontFamily}`;
-
-  // OFD 坐标系统：
-  // - 有 CTM 时，item.y 是基线（Baseline）位置，字身在基线之上绘制
-  // - 没有 CTM 时，使用 Boundary Y 作为顶部参考点
-
-  let topY;
-  if (item.ctm && item.ctm.length >= 4) {
-    // 有 CTM 时，TextCode Y 是基线位置
-    ctx.textBaseline = "alphabetic";
-    topY = item.y;
-  } else if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
-    ctx.textBaseline = "top";
-    topY = item.boundaryY;
-  } else {
-    ctx.textBaseline = "top";
-    const baselineOffset = item.fontSize * 0.8;
-    topY = item.y - baselineOffset;
-  }
-
-  // 应用 CTM 变换矩阵
-  if (item.ctm && item.ctm.length >= 4) {
-    const [a, b, c, d, e, f] = item.ctm;
-    // 先平移到文字位置，再应用 CTM 变换
-    ctx.translate(item.x, topY);
-    // 将 CTM 的缩放因子放大 TEXT_SCALE 倍，补偿 fontSize 的缩小
-    ctx.transform(
-      a * TEXT_SCALE,
-      b * TEXT_SCALE,
-      c * TEXT_SCALE,
-      d * TEXT_SCALE,
-      e || 0,
-      f || 0,
-    );
-
-    // 处理填充 - 后端已经计算好 fill 值
-    if (item.fill) {
-      ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, 0, 0);
-    }
-
-    // 处理描边
-    if (item.stroke && item.strokeColor) {
-      ctx.strokeStyle = item.strokeColor;
-      ctx.lineWidth = item.lineWidth / (a * TEXT_SCALE) || 1;
-      ctx.strokeText(item.text, 0, 0);
-    }
-  } else {
-    // 没有 CTM，直接绘制：用 scale 放大 TEXT_SCALE 倍来补偿
-    ctx.translate(item.x, topY);
-    ctx.scale(TEXT_SCALE, TEXT_SCALE);
-    if (item.fill) {
-      ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, 0, 0);
-    }
-    if (item.stroke && item.strokeColor) {
-      ctx.strokeStyle = item.strokeColor;
-      ctx.lineWidth = (item.lineWidth || 1) / TEXT_SCALE;
-      ctx.strokeText(item.text, 0, 0);
-    }
-    // 如果既没有 fill 也没有 stroke，默认填充
-    if (!item.fill && !item.stroke) {
-      ctx.fillStyle = item.color || "#000";
-      ctx.fillText(item.text, 0, 0);
-    }
-  }
-
-  ctx.restore();
-}
-
-// Canvas 绘制图片
-function drawImage(ctx, imgData) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      ctx.save();
-
-      // 处理 Alpha 透明度
-      if (imgData.alpha > 0 && imgData.alpha < 1) {
-        ctx.globalAlpha = imgData.alpha;
-      }
-
-      // 如果有 CTM 变换（旋转/倾斜）
-      if (imgData.ctm && imgData.ctm.length >= 4) {
-        const [a, b, c, d, e, f] = imgData.ctm;
-
-        // 移动到 Boundary 的位置
-        ctx.translate(imgData.x, imgData.y);
-
-        // 图片在对象坐标系中是单位正方形 (0,0)-(1,1)
-        // CTM 将其变换到实际尺寸和旋转
-        ctx.transform(a, b, c, d, e || 0, f || 0);
-
-        // 绘制单位正方形大小的图片（CTM 会将其变换到正确尺寸）
-        ctx.drawImage(img, 0, 0, 1, 1);
-      } else {
-        // 普通绘制，直接使用 Boundary 的尺寸
-        ctx.drawImage(img, imgData.x, imgData.y, imgData.width, imgData.height);
-      }
-
-      ctx.restore();
-      resolve();
-    };
-    img.onerror = (err) => {
-      console.error("图片加载失败:", err);
-      resolve();
-    };
-    img.src = imgData.dataURL;
-  });
-}
-
-/**
- * 创建 Pattern 填充（异步版本）
- *
- * Pattern 元素示例：
- * <ofd:Pattern Width="467" Height="155" XStep="1920" YStep="1080" RelativeTo="Page"
- *              CTM="0.2393 0 0 0.2393 165.7258 -152.0952">
- *
- * 关键参数：
- * - Width, Height: 单元格内容尺寸 (mm)
- * - XStep, YStep: 平铺步长 (mm)
- * - CTM: [a, b, c, d, e, f]
- *   - a, d: 缩放因子（如 0.2393）
- *   - e, f: 起始偏移（mm），f 可能为负数表示第一个 tile 在页面外
- *
- * 平铺计算示例（页面高 190.5mm）：
- * - 起始 Y = f = -152.1mm（页面外）
- * - 步长 = YStep * d = 1080 * 0.2393 = 258.44mm
- * - Tile 0: Y = -152.1mm（不可见）
- * - Tile 1: Y = -152.1 + 258.44 = 106.34mm（可见，在页面中下部）
- *
- * @param {CanvasRenderingContext2D} ctx - 主画布上下文
- * @param {Object} patternData - Pattern 数据
- * @returns {Promise<CanvasPattern|null>} Canvas 图案对象
- */
-async function createPatternFill(ctx, patternData) {
-  console.log("=== createPatternFill 开始 ===");
-  console.log("Pattern Data:", patternData);
-
-  if (!patternData || patternData.xStep <= 0 || patternData.yStep <= 0) {
-    console.warn("Pattern 数据无效:", patternData);
-    return null;
-  }
-
-  const mmToPx = 3.78; // mm to px
-
-  // 获取 CTM 参数
-  // CTM = [a, b, c, d, e, f] 其中：
-  // - a, d 是缩放因子（如 0.2393）
-  // - e, f 是起始偏移（mm）
-  let ctmScaleX = 1,
-    ctmScaleY = 1;
-  let ctmE_mm = 0,
-    ctmF_mm = 0;
-  if (patternData.ctm && patternData.ctm.length >= 4) {
-    ctmScaleX = patternData.ctm[0];
-    ctmScaleY = patternData.ctm[3];
-    if (patternData.ctm.length >= 6) {
-      ctmE_mm = patternData.ctm[4];
-      ctmF_mm = patternData.ctm[5];
-    }
-  }
-
-  // 将 CTM 平移转换为像素
-  const ctmE_px = ctmE_mm * mmToPx;
-  const ctmF_px = ctmF_mm * mmToPx;
-
-  // 计算应用 CTM 缩放后的实际重复单元尺寸
-  // XStep/YStep 是 mm，需要先转像素再乘缩放
-  // 例如：YStep=1080mm * 3.78 * 0.2393 ≈ 976px
-  const patternWidth = Math.ceil(patternData.xStep * mmToPx * ctmScaleX);
-  const patternHeight = Math.ceil(patternData.yStep * mmToPx * ctmScaleY);
-
-  console.log(
-    `Pattern 分析:\n` +
-      `  - XStep=${patternData.xStep}mm, YStep=${patternData.yStep}mm\n` +
-      `  - CTM scale=(${ctmScaleX}, ${ctmScaleY})\n` +
-      `  - CTM offset=(${ctmE_mm}mm, ${ctmF_mm}mm) = (${ctmE_px.toFixed(2)}px, ${ctmF_px.toFixed(2)}px)\n` +
-      `  - 烘焙后单元尺寸=(${patternWidth}px, ${patternHeight}px)\n` +
-      `  - 平铺计算:\n` +
-      `    * Tile 0: Y = ${ctmF_mm.toFixed(2)}mm = ${ctmF_px.toFixed(2)}px (${ctmF_mm < 0 ? "页面外" : "页面内"})\n` +
-      `    * Tile 1: Y = ${ctmF_mm.toFixed(2)} + ${(patternData.yStep * ctmScaleY).toFixed(2)} = ${(ctmF_mm + patternData.yStep * ctmScaleY).toFixed(2)}mm = ${(ctmF_px + patternHeight).toFixed(2)}px`,
-  );
-
-  // 1. 创建离屏 Canvas，尺寸为应用 CTM 后的实际尺寸
-  const offscreenCanvas = document.createElement("canvas");
-  offscreenCanvas.width = patternWidth;
-  offscreenCanvas.height = patternHeight;
-  const offCtx = offscreenCanvas.getContext("2d");
-
-  // 清空画布
-  offCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
-
-  // 2. 渲染 CellContent，应用 CTM 缩放
-  // 图片坐标需要乘以 mmToPx * ctmScale
-  const combinedScaleX = mmToPx * ctmScaleX;
-  const combinedScaleY = mmToPx * ctmScaleY;
-
-  // 渲染路径（同步）
-  if (patternData.cellPaths && patternData.cellPaths.length > 0) {
-    for (const cellPath of patternData.cellPaths) {
-      drawCellPathWithScale(offCtx, cellPath, combinedScaleX, combinedScaleY);
-    }
-  }
-
-  // 渲染图片（异步，等待所有图片加载完成）
-  if (patternData.cellImages && patternData.cellImages.length > 0) {
-    const imagePromises = patternData.cellImages.map((cellImg) =>
-      drawCellImageAsync(offCtx, cellImg, combinedScaleX, combinedScaleY),
-    );
-    await Promise.all(imagePromises);
-    console.log("Pattern: 所有图片加载完成");
-  }
-
-  // 3. 创建 CanvasPattern
-  const pattern = ctx.createPattern(offscreenCanvas, "repeat");
-  if (!pattern) {
-    return null;
-  }
-
-  // 调试：将离屏 Canvas 添加到页面上查看
-  if (window.DEBUG_PATTERN) {
-    const debugDiv = document.createElement("div");
-    debugDiv.style.cssText = `
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      z-index: 9999;
-      background: white;
-      border: 2px solid red;
-      padding: 10px;
-    `;
-    debugDiv.innerHTML = `<div>Pattern Debug (${patternWidth}×${patternHeight})</div>`;
-    offscreenCanvas.style.border = "1px solid black";
-    offscreenCanvas.style.maxWidth = "300px";
-    offscreenCanvas.style.maxHeight = "300px";
-    debugDiv.appendChild(offscreenCanvas.cloneNode(true));
-    document.body.appendChild(debugDiv);
-  }
-
-  // 4. 处理 RelativeTo 坐标对齐和负偏移
-  // Canvas Pattern 的 repeat 会自动平铺
-  // setTransform 设置第一个 tile 的起始位置
-  // 如果 f 为负数，第一个 tile 在页面外，第二个 tile 会自动出现在正确位置
-  const matrix = new DOMMatrix();
-
-  if (patternData.relativeTo === "Page") {
-    // Pattern 相对于页面原点 (0,0) 对齐
-    // CTM 的 e, f 定义了 Pattern 的起始位置（像素）
-    matrix.translateSelf(ctmE_px, ctmF_px);
-    console.log(
-      `Pattern RelativeTo=Page:\n` +
-        `  - 起始位置: (${ctmE_px.toFixed(2)}px, ${ctmF_px.toFixed(2)}px)\n` +
-        `  - 第 2 行位置: Y = ${ctmF_px.toFixed(2)} + ${patternHeight} = ${(ctmF_px + patternHeight).toFixed(2)}px`,
-    );
-  } else {
-    // RelativeTo="Object" (默认)
-    // Pattern 相对于对象边界框左上角对齐
-    matrix.translateSelf(ctmE_px, ctmF_px);
-    console.log(
-      `Pattern RelativeTo=Object:\n` +
-        `  - 总平移: (${ctmE_px.toFixed(2)}px, ${ctmF_px.toFixed(2)}px)`,
-    );
-  }
-
-  pattern.setTransform(matrix);
-  return pattern;
-}
-
-/**
- * 在离屏 Canvas 上绘制单元格路径（带独立 X/Y 缩放）
- */
-function drawCellPathWithScale(ctx, pathData, scaleX, scaleY) {
-  try {
-    const commands = JSON.parse(pathData.commands);
-    if (!commands || commands.length === 0) return;
-
-    ctx.save();
-    ctx.beginPath();
-
-    for (const cmd of commands) {
-      switch (cmd.cmd) {
-        case "M":
-          ctx.moveTo(cmd.x * scaleX, cmd.y * scaleY);
-          break;
-        case "L":
-          ctx.lineTo(cmd.x * scaleX, cmd.y * scaleY);
-          break;
-        case "C":
-          ctx.bezierCurveTo(
-            cmd.x1 * scaleX,
-            cmd.y1 * scaleY,
-            cmd.x2 * scaleX,
-            cmd.y2 * scaleY,
-            cmd.x * scaleX,
-            cmd.y * scaleY,
-          );
-          break;
-        case "Q":
-          ctx.quadraticCurveTo(
-            cmd.x1 * scaleX,
-            cmd.y1 * scaleY,
-            cmd.x * scaleX,
-            cmd.y * scaleY,
-          );
-          break;
-        case "Z":
-          ctx.closePath();
-          break;
-      }
-    }
-
-    if (pathData.fillColor && pathData.fillColor !== "transparent") {
-      ctx.fillStyle = pathData.fillColor;
-      ctx.fill();
-    }
-
-    if (pathData.strokeColor && pathData.strokeColor !== "transparent") {
-      ctx.strokeStyle = pathData.strokeColor;
-      ctx.lineWidth = (pathData.lineWidth || 1) * Math.min(scaleX, scaleY);
-      ctx.stroke();
-    }
-
-    ctx.restore();
-  } catch (e) {
-    console.warn("Pattern path render error:", e);
-  }
-}
-
-/**
- * 异步绘制单元格图片（带独立 X/Y 缩放）
- * @returns {Promise<void>}
- */
-function drawCellImageAsync(ctx, imgData, scaleX, scaleY) {
-  return new Promise((resolve) => {
-    if (!imgData.dataURL) {
-      console.warn("CellImage: 没有 dataURL");
-      resolve();
-      return;
-    }
-
-    const img = new Image();
-
-    img.onload = () => {
-      ctx.save();
-
-      // 坐标和尺寸应用各自的缩放因子
-      const x = imgData.x * scaleX;
-      const y = imgData.y * scaleY;
-      const w = imgData.width * scaleX;
-      const h = imgData.height * scaleY;
-
-      console.log(
-        `CellImage: 绘制图片 original=(${imgData.x}, ${imgData.y}, ${imgData.width}, ${imgData.height}), ` +
-          `scaled=(${x.toFixed(2)}, ${y.toFixed(2)}, ${w.toFixed(2)}, ${h.toFixed(2)})`,
-      );
-
-      ctx.drawImage(img, x, y, w, h);
-      ctx.restore();
-      resolve();
-    };
-
-    img.onerror = (err) => {
-      console.error("CellImage: 图片加载失败", err);
-      resolve();
-    };
-
-    img.src = imgData.dataURL;
-  });
-}
-
-// Canvas 绘制路径（异步版本，支持 Pattern）
-async function drawPath(ctx, pathData) {
-  try {
-    const commands = JSON.parse(pathData.commands);
-    console.log("Path Commands:", commands.length, commands);
-    if (!commands || commands.length === 0) return;
-
-    ctx.save();
-    ctx.beginPath();
-
-    const offsetX = pathData.x || 0;
-    const offsetY = pathData.y || 0;
-
-    for (const cmd of commands) {
-      switch (cmd.cmd) {
-        case "M":
-          ctx.moveTo(offsetX + cmd.x, offsetY + cmd.y);
-          break;
-        case "L":
-          ctx.lineTo(offsetX + cmd.x, offsetY + cmd.y);
-          break;
-        case "C":
-          ctx.bezierCurveTo(
-            offsetX + cmd.x1,
-            offsetY + cmd.y1,
-            offsetX + cmd.x2,
-            offsetY + cmd.y2,
-            offsetX + cmd.x,
-            offsetY + cmd.y,
-          );
-          break;
-        case "Q":
-          ctx.quadraticCurveTo(
-            offsetX + cmd.x1,
-            offsetY + cmd.y1,
-            offsetX + cmd.x,
-            offsetY + cmd.y,
-          );
-          break;
-        case "Z":
-          ctx.closePath();
-          break;
-      }
-    }
-
-    // 处理填充（Pattern、渐变或纯色）
-    if (pathData.pattern) {
-      // Pattern 图案填充（异步等待图片加载）
-      const pattern = await createPatternFill(ctx, pathData.pattern);
-      if (pattern) {
-        ctx.fillStyle = pattern;
-        ctx.fill();
-      }
-    } else if (pathData.gradient) {
-      // 渐变填充
-      let gradient;
-      if (pathData.gradient.type === "linear") {
-        gradient = ctx.createLinearGradient(
-          pathData.gradient.x0,
-          pathData.gradient.y0,
-          pathData.gradient.x1,
-          pathData.gradient.y1,
-        );
-      } else if (pathData.gradient.type === "radial") {
-        gradient = ctx.createRadialGradient(
-          pathData.gradient.x0,
-          pathData.gradient.y0,
-          pathData.gradient.r0 || 0,
-          pathData.gradient.x1,
-          pathData.gradient.y1,
-          pathData.gradient.r1 || 0,
-        );
-      }
-
-      if (gradient && pathData.gradient.stops) {
-        for (const stop of pathData.gradient.stops) {
-          gradient.addColorStop(stop.position, stop.color);
-        }
-        ctx.fillStyle = gradient;
-        ctx.fill();
-      }
-    } else if (pathData.fillColor && pathData.fillColor !== "transparent") {
-      // 纯色填充
-      ctx.fillStyle = pathData.fillColor;
-      ctx.fill();
-    }
-
-    // 处理描边
-    if (pathData.strokeColor && pathData.strokeColor !== "transparent") {
-      ctx.strokeStyle = pathData.strokeColor;
-      ctx.lineWidth = pathData.lineWidth || 1;
-      console.warn(ctx.lineWidth);
-      // 设置线条连接样式
-      if (pathData.lineJoin) {
-        ctx.lineJoin = pathData.lineJoin;
-      } else {
-        ctx.lineJoin = "miter"; // 默认值
-      }
-
-      // 设置线条端点样式
-      if (pathData.lineCap) {
-        ctx.lineCap = pathData.lineCap;
-      } else {
-        ctx.lineCap = "butt"; // 默认值
-      }
-
-      // 如果是 miter 连接，设置 miterLimit 以避免尖角过长
-      if (ctx.lineJoin === "miter") {
-        ctx.miterLimit = 10; // 默认值
-      }
-
-      ctx.stroke();
-    }
-
-    ctx.restore();
-  } catch (e) {
-    console.warn("Path render error:", e);
-  }
-}
-
-// ============ 上层透明文本层 ============
-// 关键：color: transparent，位置与 Canvas 文字完全重合
-
-// 创建一个隐藏的 canvas 用于测量文字
-const measureCanvas = document.createElement("canvas");
-const measureCtx = measureCanvas.getContext("2d");
-
-function renderTransparentTextLayer(container, textItems) {
-  if (!textItems || textItems.length === 0) return;
-
-  for (const item of textItems) {
-    // 检查是否是占位标记
-    if (item.text === "__PLACEHOLDER__") {
-      // 创建透明占位 div
-      const placeholderDiv = document.createElement("div");
-      console.log(item);
-      placeholderDiv.style.cssText = `
-        position: absolute;
-        left: ${item.x}px;
-        top: ${item.y}px;
-        width: ${item.width}px;
-        height: ${item.height}px;
-        background: transparent;
-        pointer-events: none;
-        z-index: 3;
-      `;
-
-      placeholderDiv.setAttribute("data-placeholder", "true");
-      container.appendChild(placeholderDiv);
-      continue;
-    }
-
-    const span = document.createElement("span");
-    span.textContent = item.text;
-
-    const TEXT_SCALE = 10; // 与 Canvas 层保持一致的缩放因子
-    const renderFontSize = item.fontSize / TEXT_SCALE;
-
-    // 计算 CTM 变换：缩放因子放大 TEXT_SCALE 倍，补偿 fontSize 的缩小
-    let transform = "";
-    if (item.ctm && item.ctm.length >= 4) {
-      const [a, b, c, d, e, f] = item.ctm;
-      transform = `transform: matrix(${a * TEXT_SCALE}, ${b * TEXT_SCALE}, ${c * TEXT_SCALE}, ${d * TEXT_SCALE}, ${e || 0}, ${f || 0}); transform-origin: left top;`;
-    } else {
-      // 没有 CTM 时，用 scale 放大 TEXT_SCALE 倍来补偿
-      transform = `transform: scale(${TEXT_SCALE}); transform-origin: left top;`;
-    }
-
-    // OFD 坐标系统：有 CTM 时使用变换后的 Y，否则使用 Boundary Y
-    let topPos;
-    if (item.ctm && item.ctm.length >= 4) {
-      topPos = item.y;
-    } else if (item.boundaryY !== undefined && item.textCodeY !== undefined) {
-      topPos = item.boundaryY;
-    } else {
-      // 兼容旧版本
-      const baselineOffset = item.fontSize * 0.8;
-      topPos = item.y - baselineOffset;
-    }
-
-    // 构建 font-weight 和 font-style
-    let fontWeight = "";
-    if (item.weight && item.weight !== 400) {
-      const fontAlreadyBold = item.fontID && boldFontIDs.has(item.fontID);
-      if (!fontAlreadyBold) {
-        fontWeight = `font-weight: ${item.weight};`;
-      }
-    }
-    let fontItalic = item.italic ? "font-style: italic;" : "";
-
-    // 关键样式：
-    // - color: transparent 让文字透明（用户看不见）
-    // - 字号缩小 10 倍，transform 放大 10 倍，与 Canvas 层一致
-    // - user-select: text 允许选择
-    span.style.cssText = `
-      position: absolute;
-      left: ${item.x}px;
-      top: ${topPos}px;
-      font-family: ${item.fontFamily};
-      font-size: ${renderFontSize}px;
-      ${fontWeight}
-      ${fontItalic}
-      color: transparent;
-      white-space: pre;
-      line-height: 1;
-      letter-spacing: 0;
-      cursor: text;
-      user-select: text;
-      -webkit-user-select: text;
-      -moz-user-select: text;
-      ${transform}
-    `;
-
-    container.appendChild(span);
   }
 }
 

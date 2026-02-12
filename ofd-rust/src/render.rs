@@ -216,7 +216,7 @@ impl Parser {
         result
     }
 
-    fn get_page_size_from_page(&self, page: &Page) -> (f64, f64) {
+    pub(crate) fn get_page_size_from_page(&self, page: &Page) -> (f64, f64) {
         // 首先尝试从页面的 Area 获取
         if !page.area.physical_box.is_empty() {
             let (w, h) = parse_box(&page.area.physical_box);
@@ -392,7 +392,7 @@ impl Parser {
     }
 
 
-    fn parse_axial_shd(&self, shd: &AxialShd, ctm: &[f64], _scale: f64) -> GradientData {
+    pub(crate) fn parse_axial_shd(&self, shd: &AxialShd, ctm: &[f64], _scale: f64) -> GradientData {
         let start_parts: Vec<f64> = shd.start_point.split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
@@ -436,7 +436,7 @@ impl Parser {
         }
     }
 
-    fn parse_radial_shd(&self, shd: &RadialShd, ctm: &[f64], _scale: f64) -> GradientData {
+    pub(crate) fn parse_radial_shd(&self, shd: &RadialShd, ctm: &[f64], _scale: f64) -> GradientData {
         let start_parts: Vec<f64> = shd.start_point.split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
@@ -835,7 +835,7 @@ impl<'a> PathScanner<'a> {
 
 
 /// 转换OFD路径命令为Canvas命令JSON
-fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, offset_y: f64, ctm: &[f64], page_width: f64, page_height: f64) -> String {
+pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, offset_y: f64, ctm: &[f64], page_width: f64, page_height: f64) -> String {
     let mut commands: Vec<serde_json::Value> = Vec::new();
 
     let transform_point = |x: f64, y: f64| -> (f64, f64) {

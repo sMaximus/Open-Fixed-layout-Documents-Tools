@@ -131,6 +131,22 @@ func renderPage(this js.Value, args []js.Value) interface{} {
 	return string(jsonData)
 }
 
+// renderPageSVG 渲染页面为 SVG（使用 freetype 渲染文字）
+func renderPageSVG(this js.Value, args []js.Value) interface{} {
+	if parser == nil {
+		return createErrorResult("请先解析OFD文件")
+	}
+
+	pageIndex := 0
+	if len(args) > 0 {
+		pageIndex = args[0].Int()
+	}
+
+	result := parser.RenderPageSVG(pageIndex)
+	jsonData, _ := json.Marshal(result)
+	return string(jsonData)
+}
+
 // renderAllPages 渲染所有页面
 func renderAllPages(this js.Value, args []js.Value) interface{} {
 	if parser == nil {
@@ -318,6 +334,7 @@ func main() {
 	js.Global().Set("ofdGetFileContent", js.FuncOf(getFileContent))
 	js.Global().Set("ofdGetPagePath", js.FuncOf(getPagePath))
 	js.Global().Set("ofdRenderPage", js.FuncOf(renderPage))
+	js.Global().Set("ofdRenderPageSVG", js.FuncOf(renderPageSVG))
 	js.Global().Set("ofdRenderPages", js.FuncOf(renderPages))
 	js.Global().Set("ofdRenderAllPages", js.FuncOf(renderAllPages))
 	js.Global().Set("ofdGetPageInfo", js.FuncOf(getPageInfo))

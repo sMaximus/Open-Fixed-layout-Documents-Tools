@@ -90,6 +90,7 @@ type PathObject struct {
 	LineWidth       float64      `xml:"LineWidth,attr"`
 	Join            string       `xml:"Join,attr"`        // 线条连接样式：Miter, Round, Bevel
 	Cap             string       `xml:"Cap,attr"`         // 线条端点样式：Butt, Round, Square
+	Rule            string       `xml:"Rule,attr"`        // 填充规则：NonZero, Even-Odd
 	Stroke          bool         `xml:"Stroke,attr"`
 	Fill            bool         `xml:"Fill,attr"`
 	Visible         *bool        `xml:"Visible,attr"`

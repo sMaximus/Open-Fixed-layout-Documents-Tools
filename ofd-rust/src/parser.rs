@@ -20,7 +20,7 @@ pub struct ParseResult {
 
 /// OFD 解析器
 pub struct Parser {
-    files: Vec<String>,
+    pub(crate) files: Vec<String>,
     file_contents: HashMap<String, Vec<u8>>,
     pub ofd: Option<OFDDocument>,
     pub document: Option<Document>,
