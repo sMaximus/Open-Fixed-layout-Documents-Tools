@@ -42,6 +42,132 @@
         font-size: 14px;
         color: #94a3b8;
       }
+      .xml-btn {
+        display: none;
+        background: #0f3460;
+        color: #ccc;
+        border: 1px solid #0f3460;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .xml-btn:hover {
+        background: #1a4a7a;
+        color: #fff;
+      }
+      .modal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 1000;
+        justify-content: center;
+        align-items: center;
+      }
+      .modal-overlay.active {
+        display: flex;
+      }
+      .modal {
+        background: #1a1a2e;
+        border-radius: 8px;
+        width: 90vw;
+        height: 80vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      }
+      .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 20px;
+        background: #16213e;
+        color: #fff;
+        border-bottom: 1px solid #0f3460;
+      }
+      .modal-header h3 {
+        font-size: 16px;
+        margin: 0;
+      }
+      .modal-close {
+        background: none;
+        border: none;
+        color: #aaa;
+        font-size: 20px;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 4px;
+      }
+      .modal-close:hover {
+        background: #e94560;
+        color: #fff;
+      }
+      .modal-body {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+      .modal-sidebar {
+        width: 260px;
+        background: #16213e;
+        overflow-y: auto;
+        border-right: 1px solid #0f3460;
+        padding: 8px 0;
+      }
+      .file-item {
+        padding: 6px 14px;
+        font-size: 13px;
+        color: #aaa;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .file-item:hover {
+        background: #0f3460;
+        color: #fff;
+      }
+      .file-item.active {
+        background: #e94560;
+        color: #fff;
+      }
+      .file-item.non-xml {
+        color: #555;
+        cursor: default;
+      }
+      .file-item.non-xml:hover {
+        background: transparent;
+        color: #555;
+      }
+      .modal-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .modal-content-header {
+        padding: 8px 16px;
+        font-size: 13px;
+        color: #888;
+        background: #111;
+        border-bottom: 1px solid #0f3460;
+      }
+      .xml-content {
+        flex: 1;
+        margin: 0;
+        padding: 16px;
+        overflow: auto;
+        font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #d4d4d4;
+        background: #1e1e1e;
+        white-space: pre-wrap;
+        word-break: break-all;
+        tab-size: 2;
+      }
       .main {
         display: flex;
         height: calc(100vh - 60px);
@@ -150,8 +276,31 @@
     <div class="header">
       <h1>OFD Rust WASM 查看器</h1>
       <input type="file" id="fileInput" accept=".ofd" />
+      <button class="xml-btn" id="xmlBtn" onclick="window.showXmlModal()">
+        查看 XML
+      </button>
       <span id="status">⏳ 加载中...</span>
     </div>
+
+    <!-- XML 查看弹窗 -->
+    <div class="modal-overlay" id="xmlModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>📂 OFD 文件结构</h3>
+          <button class="modal-close" onclick="window.hideXmlModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-sidebar" id="xmlFileList"></div>
+          <div class="modal-content">
+            <div class="modal-content-header" id="xmlFileName">
+              选择左侧文件查看
+            </div>
+            <pre class="xml-content" id="xmlContent"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="main">
       <div class="sidebar">
         <h3>文档信息</h3>
@@ -172,6 +321,7 @@
 
       let parser = null;
       let currentPageCount = 0;
+      let ofdArrayBuffer = null;
       const scale = 3.78;
       const loadedFonts = new Map();
       let allPagesData = [];
@@ -259,6 +409,7 @@
         try {
           const arrayBuffer = await file.arrayBuffer();
           const data = new Uint8Array(arrayBuffer);
+          ofdArrayBuffer = arrayBuffer;
 
           parser = new OFDParser(data);
           const result = parser.parse();
@@ -277,6 +428,7 @@
           await renderAllPages();
 
           updateStatus(`✅ 已加载 ${currentPageCount} 页`);
+          document.getElementById("xmlBtn").style.display = "";
         } catch (err) {
           updateStatus("❌ " + err.message);
           viewer.innerHTML = `<div class="empty-state"><p>❌ 解析失败</p><p style="font-size:12px;">${err.message}</p></div>`;
@@ -693,6 +845,124 @@
           container.appendChild(span);
         }
       }
+
+      // XML 弹窗逻辑
+      async function readZipEntry(buffer, targetName) {
+        const view = new DataView(buffer);
+        const targetLower = targetName.toLowerCase();
+        let offset = 0;
+        while (offset < buffer.byteLength - 4) {
+          const sig = view.getUint32(offset, true);
+          if (sig !== 0x04034b50) break;
+          const compMethod = view.getUint16(offset + 8, true);
+          const compSize = view.getUint32(offset + 18, true);
+          const nameLen = view.getUint16(offset + 26, true);
+          const extraLen = view.getUint16(offset + 28, true);
+          const nameBytes = new Uint8Array(buffer, offset + 30, nameLen);
+          const name = new TextDecoder().decode(nameBytes);
+          const dataOffset = offset + 30 + nameLen + extraLen;
+          if (name.toLowerCase() === targetLower) {
+            const raw = new Uint8Array(buffer, dataOffset, compSize);
+            if (compMethod === 0) {
+              return new TextDecoder().decode(raw);
+            } else if (compMethod === 8) {
+              const ds = new DecompressionStream("deflate-raw");
+              const writer = ds.writable.getWriter();
+              writer.write(raw);
+              writer.close();
+              const reader = ds.readable.getReader();
+              const chunks = [];
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+              }
+              const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+              const result = new Uint8Array(totalLen);
+              let pos = 0;
+              for (const chunk of chunks) {
+                result.set(chunk, pos);
+                pos += chunk.length;
+              }
+              return new TextDecoder().decode(result);
+            }
+            return "(不支持的压缩方式)";
+          }
+          offset = dataOffset + compSize;
+        }
+        return "文件未找到: " + targetName;
+      }
+
+      function showXmlModal() {
+        if (!parser || !ofdArrayBuffer) return;
+        const modal = document.getElementById("xmlModal");
+        const fileList = document.getElementById("xmlFileList");
+        const files = parser.get_files();
+
+        let html = "";
+        for (const f of files) {
+          const isXml = f.toLowerCase().endsWith(".xml");
+          html += `<div class="file-item${isXml ? "" : " non-xml"}" data-file="${f}" title="${f}">${f}</div>`;
+        }
+        fileList.innerHTML = html;
+
+        fileList
+          .querySelectorAll(".file-item:not(.non-xml)")
+          .forEach((item) => {
+            item.addEventListener("click", async () => {
+              fileList
+                .querySelectorAll(".file-item")
+                .forEach((el) => el.classList.remove("active"));
+              item.classList.add("active");
+              const name = item.dataset.file;
+              document.getElementById("xmlFileName").textContent = name;
+              document.getElementById("xmlContent").textContent = "加载中...";
+              try {
+                const content = await readZipEntry(ofdArrayBuffer, name);
+                document.getElementById("xmlContent").textContent =
+                  formatXml(content);
+              } catch (e) {
+                document.getElementById("xmlContent").textContent =
+                  "读取失败: " + e.message;
+              }
+            });
+          });
+
+        modal.classList.add("active");
+      }
+
+      function hideXmlModal() {
+        document.getElementById("xmlModal").classList.remove("active");
+      }
+
+      function formatXml(xml) {
+        let formatted = "";
+        let indent = 0;
+        const parts = xml.replace(/(>)\s*(<)/g, "$1\n$2").split("\n");
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (!trimmed) continue;
+          if (trimmed.startsWith("</")) indent = Math.max(indent - 1, 0);
+          formatted += "  ".repeat(indent) + trimmed + "\n";
+          if (
+            trimmed.startsWith("<") &&
+            !trimmed.startsWith("</") &&
+            !trimmed.startsWith("<?") &&
+            !trimmed.endsWith("/>") &&
+            !trimmed.includes("</")
+          ) {
+            indent++;
+          }
+        }
+        return formatted.trim();
+      }
+
+      window.showXmlModal = showXmlModal;
+      window.hideXmlModal = hideXmlModal;
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideXmlModal();
+      });
 
       // 初始化
       async function main() {
