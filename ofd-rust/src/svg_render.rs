@@ -42,6 +42,43 @@ fn next_gradient_id() -> String {
     format!("grad_{}", id)
 }
 
+/// 获取中文字体名对应的系统英文别名
+pub fn get_font_aliases(name: &str) -> Vec<&'static str> {
+    // 去掉竖排字体前缀 @
+    let name = name.strip_prefix('@').unwrap_or(name);
+    match name {
+        "仿宋" | "仿宋_GB2312" => vec!["FangSong", "FangSong_GB2312", "STFangsong", "STFangSong"],
+        "黑体" => vec!["SimHei", "STHeiti", "Heiti SC"],
+        "宋体" | "SimSun" => vec!["SimSun", "STSong", "Songti SC", "NSimSun"],
+        "楷体" | "楷体_GB2312" => vec!["KaiTi", "KaiTi_GB2312", "STKaiti", "Kaiti SC"],
+        "隶书" => vec!["LiSu", "STLiti", "Baoli SC"],
+        "幼圆" => vec!["YouYuan"],
+        "华文仿宋" | "STFangsong" => vec!["STFangsong", "STFangSong", "FangSong"],
+        "华文黑体" | "STHeiti" => vec!["STHeiti", "Heiti SC"],
+        "华文宋体" | "STSong" => vec!["STSong", "Songti SC"],
+        "华文楷体" | "STKaiti" => vec!["STKaiti", "Kaiti SC"],
+        "华文中宋" => vec!["STZhongsong"],
+        "华文细黑" => vec!["STXihei", "Heiti SC"],
+        "微软雅黑" => vec!["Microsoft YaHei", "PingFang SC"],
+        "新宋体" | "NSimSun" => vec!["NSimSun", "Songti SC", "STSong"],
+        _ => vec![],
+    }
+}
+
+/// 获取通用的中文 fallback 字体链（适配 Windows/macOS/Linux）
+pub fn cjk_fallback_fonts() -> &'static str {
+    "STSong, Songti SC, SimSun, STHeiti, Heiti SC, PingFang SC, Microsoft YaHei, sans-serif"
+}
+
+/// 去掉竖排字体前缀 @，返回 (去掉@的名称, 是否竖排)
+pub fn strip_vertical_prefix(name: &str) -> (&str, bool) {
+    if let Some(stripped) = name.strip_prefix('@') {
+        (stripped, true)
+    } else {
+        (name, false)
+    }
+}
+
 /// XML 转义
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -113,21 +150,37 @@ impl Parser {
         // 获取页面层
         let layers = self.get_page_layers(&page);
 
-        for layer in &layers {
-            for path_obj in layer.path_objects() {
+        web_sys::console::log_1(&format!(
+            "[SVG渲染] page_index={}, templates={}, layers={}, page_xml_len={}",
+            page_index, page.template.len(), layers.len(), page_xml.len()
+        ).into());
+
+        for (li, layer) in layers.iter().enumerate() {
+            let paths: Vec<_> = layer.path_objects().collect();
+            let imgs: Vec<_> = layer.image_objects().collect();
+            let txts: Vec<_> = layer.text_objects().collect();
+            let composites: Vec<_> = layer.composite_objects().collect();
+            web_sys::console::log_1(&format!(
+                "[SVG渲染] layer[{}]: paths={}, images={}, texts={}, composites={}",
+                li, paths.len(), imgs.len(), txts.len(), composites.len()
+            ).into());
+            for path_obj in paths {
                 if let Some(s) = self.path_object_to_svg(path_obj, scale, width, height) {
                     svg_parts.push(s);
                 }
             }
-            for img in layer.image_objects() {
+            for img in imgs {
                 if let Some(s) = self.image_object_to_svg(img, scale) {
                     svg_parts.push(s);
                 }
             }
-            for text in layer.text_objects() {
+            for text in txts {
                 let (text_svgs, overlays) = self.render_text_svg(text, scale);
                 svg_parts.extend(text_svgs);
                 text_overlay.extend(overlays);
+            }
+            for comp in composites {
+                self.render_composite_object_svg(&mut svg_parts, &mut text_overlay, comp, scale, width, height);
             }
         }
 
@@ -478,16 +531,54 @@ impl Parser {
 
         let font_size_px = font_size * scale * scale_y;
 
-        // 字体族
+        // 字体族：嵌入字体优先使用 OFD_Font_{id}（与前端 @font-face 注册名一致）
+        // 检测竖排字体（@前缀）
+        let mut is_vertical_font = false;
         let font_family = if let Some(font) = self.fonts.get(font_id) {
-            format!("'{}', '{}', SimSun, serif", font.font_name, font.family_name)
+            let has_file = self.font_files.contains_key(font_id);
+            // 检测 FontName 或 FamilyName 是否以 @ 开头
+            if font.font_name.starts_with('@') || font.family_name.starts_with('@') {
+                is_vertical_font = true;
+            }
+            web_sys::console::log_1(&format!(
+                "[字体] TextObject font_id={}, font_name='{}', family='{}', has_embedded_file={}, vertical={}",
+                font_id, font.font_name, font.family_name, has_file, is_vertical_font
+            ).into());
+            // 构建 font-family 列表，去掉 @ 前缀
+            let mut families = Vec::new();
+            if has_file {
+                families.push(format!("'OFD_Font_{}'", font_id));
+            }
+            if !font.font_name.is_empty() {
+                let (clean_name, _) = strip_vertical_prefix(&font.font_name);
+                families.push(format!("'{}'", clean_name));
+                for alias in get_font_aliases(&font.font_name) {
+                    families.push(format!("'{}'", alias));
+                }
+            }
+            if !font.family_name.is_empty() && font.family_name != font.font_name {
+                let (clean_name, _) = strip_vertical_prefix(&font.family_name);
+                families.push(format!("'{}'", clean_name));
+                for alias in get_font_aliases(&font.family_name) {
+                    let a = format!("'{}'", alias);
+                    if !families.contains(&a) {
+                        families.push(a);
+                    }
+                }
+            }
+            families.push(cjk_fallback_fonts().to_string());
+            families.join(", ")
         } else {
-            "SimSun, serif".to_string()
+            web_sys::console::log_1(&format!(
+                "[字体] TextObject font_id={} NOT FOUND in fonts map (total fonts: {})",
+                font_id, self.fonts.len()
+            ).into());
+            cjk_fallback_fonts().to_string()
         };
 
         // 描边属性
         let line_width_px = if text.stroke && text.line_width > 0.0 {
-            text.line_width * scale
+            text.line_width * scale * scale_y
         } else {
             0.0
         };
@@ -513,11 +604,13 @@ impl Parser {
             let mut current_x_mm = tc_x_mm;
             let mut current_y_mm = tc_y_mm;
 
-            let mut seg_text = Vec::new();
+            // seg_text: 用于 SVG 渲染和文本蒙层的原始 Unicode 字符
+            let mut seg_text: Vec<char> = Vec::new();
             let mut seg_positions_x = Vec::new();
             let mut seg_start_y_mm = current_y_mm;
 
-            let flush_segment = |seg_text: &mut Vec<char>, seg_positions_x: &mut Vec<f64>, seg_start_y_mm: f64,
+            let flush_segment = |seg_text: &mut Vec<char>,
+                                      seg_positions_x: &mut Vec<f64>, seg_start_y_mm: f64,
                                       results: &mut Vec<String>, overlays: &mut Vec<TextOverlayItem>| {
                 if seg_text.is_empty() {
                     return;
@@ -537,19 +630,51 @@ impl Parser {
                         italic_attr = r#" font-style="italic""#.to_string();
                     }
 
-                    let fill_attr = format!(r#"fill="{}""#, color);
+                    let fill_attr = if text.fill {
+                        format!(r#"fill="{}""#, color)
+                    } else {
+                        r#"fill="none""#.to_string()
+                    };
                     let mut stroke_attr = String::new();
                     if text.stroke {
-                        if let Some(ref sc) = stroke_color_str {
-                            stroke_attr = format!(r#" stroke="{}" stroke-width="{:.2}""#, sc, line_width_px);
-                        }
+                        let sc = stroke_color_str.as_deref().unwrap_or(&color);
+                        stroke_attr = format!(r#" stroke="{}" stroke-width="{:.4}""#, sc, line_width_px);
+                    } else if text.fill {
+                        // 对纯填充文字添加微量描边，使笔画更清晰（模拟 font embolden）
+                        let embolden_width = font_size_px * 0.02;
+                        stroke_attr = format!(r#" stroke="{}" stroke-width="{:.4}" paint-order="stroke""#, color, embolden_width);
                     }
 
                     let escaped = xml_escape(&ch.to_string());
-                    results.push(format!(
-                        r#"<text x="{:.2}" y="{:.2}" font-size="{:.2}" font-family="{}" {}{}{}{}>{}</text>"#,
-                        cpx, cpy, font_size_px, font_family, fill_attr, weight_attr, italic_attr, stroke_attr, escaped
-                    ));
+
+                    // 应用变换：HScale 水平缩放 和/或 竖排字体旋转
+                    let transform_attr = if is_vertical_font {
+                        // 竖排字体：每个字符绕自身中心顺时针旋转90°
+                        // 字符中心约在 (cpx + font_size_px*0.5, cpy - font_size_px*0.35)
+                        let cx = cpx + font_size_px * 0.5;
+                        let cy = cpy - font_size_px * 0.35;
+                        if h_scale < 1.0 - 0.001 || h_scale > 1.0 + 0.001 {
+                            format!(r#" transform="matrix({:.4},0,0,1,{:.2},0) rotate(90,{:.2},{:.2})""#,
+                                h_scale, cpx * (1.0 - h_scale), cx, cy)
+                        } else {
+                            format!(r#" transform="rotate(90,{:.2},{:.2})""#, cx, cy)
+                        }
+                    } else if h_scale < 1.0 - 0.001 || h_scale > 1.0 + 0.001 {
+                        format!(r#" transform="matrix({:.4},0,0,1,{:.2},0)""#,
+                            h_scale, cpx * (1.0 - h_scale))
+                    } else {
+                        String::new()
+                    };
+
+                    let svg_text = format!(
+                        r#"<text x="{:.2}" y="{:.2}" font-size="{:.2}" font-family="{}"{} {}{}{}{}>{}</text>"#,
+                        cpx, cpy, font_size_px, font_family, transform_attr, fill_attr, weight_attr, italic_attr, stroke_attr, escaped
+                    );
+                    // 调试：输出前2个 text 元素
+                    if results.len() < 2 {
+                        web_sys::console::log_1(&format!("[SVG-TEXT] {}", svg_text).into());
+                    }
+                    results.push(svg_text);
                 }
 
                 // 文本蒙层
@@ -558,7 +683,7 @@ impl Parser {
                     let first_px = (bx + seg_positions_x[0]) * scale;
                     let last_px = (bx + seg_positions_x[seg_positions_x.len() - 1]) * scale;
                     let py = (by + seg_start_y_mm) * scale;
-                    let text_width = last_px - first_px + font_size_px * 0.9;
+                    let text_width = last_px - first_px + font_size_px * h_scale * 0.9;
                     overlays.push(TextOverlayItem {
                         text: txt,
                         x: first_px,
@@ -573,7 +698,7 @@ impl Parser {
             };
 
             for (i, ch) in chars.iter().enumerate() {
-                let is_space = *ch == ' ' || *ch == '\u{3000}';
+                let is_space = *ch == ' ' || *ch == '\u{3000}' || *ch == '\u{00A0}';
 
                 if is_space {
                     flush_segment(&mut seg_text, &mut seg_positions_x, seg_start_y_mm, &mut results, &mut overlays);
@@ -613,6 +738,69 @@ impl Parser {
         }
 
         (results, overlays)
+    }
+
+    /// 渲染复合对象（CompositeObject）为 SVG
+    fn render_composite_object_svg(
+        &mut self,
+        svg_parts: &mut Vec<String>,
+        text_overlay: &mut Vec<TextOverlayItem>,
+        comp: &CompositeObject,
+        scale: f64,
+        page_w: f64,
+        page_h: f64,
+    ) {
+        let unit = match self.composite_units.get(&comp.resource_id) {
+            Some(u) => u.clone(),
+            None => {
+                web_sys::console::log_1(&format!(
+                    "[CompositeObject] unit not found: ResourceID={}",
+                    comp.resource_id
+                ).into());
+                return;
+            }
+        };
+
+        let (cx, cy, cw, ch) = parse_boundary(&comp.boundary);
+        // 计算从图元坐标到页面坐标的缩放
+        let sx = if unit.width > 0.0 { cw / unit.width } else { 1.0 };
+        let sy = if unit.height > 0.0 { ch / unit.height } else { 1.0 };
+
+        let page_block = match &unit.content.page_block {
+            Some(pb) => pb,
+            None => return,
+        };
+
+        // 用 SVG <g> 包裹，应用位移和缩放
+        svg_parts.push(format!(
+            r#"<g transform="translate({:.4},{:.4}) scale({:.6},{:.6})">"#,
+            cx * scale, cy * scale, sx, sy
+        ));
+
+        for obj in &page_block.objects {
+            match obj {
+                LayerObject::PathObject(path_obj) => {
+                    if let Some(s) = self.path_object_to_svg(path_obj, scale, page_w, page_h) {
+                        svg_parts.push(s);
+                    }
+                }
+                LayerObject::ImageObject(img) => {
+                    if let Some(s) = self.image_object_to_svg(img, scale) {
+                        svg_parts.push(s);
+                    }
+                }
+                LayerObject::TextObject(text) => {
+                    let (text_svgs, overlays) = self.render_text_svg(text, scale);
+                    svg_parts.extend(text_svgs);
+                    text_overlay.extend(overlays);
+                }
+                LayerObject::CompositeObject(_) => {
+                    // 不支持嵌套复合对象
+                }
+            }
+        }
+
+        svg_parts.push("</g>".to_string());
     }
 
     /// 加载页面注释图片为 SVG 元素

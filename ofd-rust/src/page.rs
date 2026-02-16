@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 页面结构
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename = "Page")]
 pub struct Page {
     #[serde(rename = "Area", default)]
@@ -17,7 +17,7 @@ pub struct Page {
 }
 
 /// 页面区域定义
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct PageAreaDef {
     #[serde(rename = "PhysicalBox", default)]
     pub physical_box: String,
@@ -28,7 +28,7 @@ pub struct PageAreaDef {
 }
 
 /// 模板引用
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Template {
     #[serde(rename = "@TemplateID", default)]
     pub template_id: String,
@@ -37,14 +37,14 @@ pub struct Template {
 }
 
 /// 页面内容
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Content {
     #[serde(rename = "Layer", default)]
     pub layer: Vec<Layer>,
 }
 
 /// 图层
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Layer {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -57,12 +57,26 @@ pub struct Layer {
 }
 
 /// 图层对象（可以是文本、路径或图片）
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum LayerObject {
     TextObject(TextObject),
     PathObject(PathObject),
     ImageObject(ImageObject),
+    CompositeObject(CompositeObject),
+}
+
+/// 复合对象引用
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct CompositeObject {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Boundary", default)]
+    pub boundary: String,
+    #[serde(rename = "@ResourceID", default)]
+    pub resource_id: String,
+    #[serde(rename = "@CTM", default)]
+    pub ctm: String,
 }
 
 impl Layer {
@@ -86,10 +100,17 @@ impl Layer {
             _ => None,
         })
     }
+
+    pub fn composite_objects(&self) -> impl Iterator<Item = &CompositeObject> {
+        self.objects.iter().filter_map(|o| match o {
+            LayerObject::CompositeObject(c) => Some(c),
+            _ => None,
+        })
+    }
 }
 
 /// 文本对象
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TextObject {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -107,9 +128,9 @@ pub struct TextObject {
     pub italic: bool,
     #[serde(rename = "@Stroke", default)]
     pub stroke: bool,
-    #[serde(rename = "@Fill", default)]
+    #[serde(rename = "@Fill", default = "default_true")]
     pub fill: bool,
-    #[serde(rename = "@LineWidth", default)]
+    #[serde(rename = "@LineWidth", default = "default_line_width")]
     pub line_width: f64,
     #[serde(rename = "@CTM", default)]
     pub ctm: String,
@@ -123,8 +144,33 @@ pub struct TextObject {
     pub cg_transform: Vec<CGTransform>,
 }
 
+impl Default for TextObject {
+    fn default() -> Self {
+        TextObject {
+            id: String::new(),
+            boundary: String::new(),
+            font: String::new(),
+            size: 0.0,
+            h_scale: 0.0,
+            weight: 0,
+            italic: false,
+            stroke: false,
+            fill: true,
+            line_width: 0.353,
+            ctm: String::new(),
+            fill_color: None,
+            stroke_color: None,
+            text_code: Vec::new(),
+            cg_transform: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool { true }
+fn default_line_width() -> f64 { 0.353 }
+
 /// 文本内容
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct TextCode {
     #[serde(rename = "@X", default)]
     pub x: f64,
@@ -138,8 +184,8 @@ pub struct TextCode {
     pub content: String,
 }
 
-/// 变换矩阵
-#[derive(Debug, Default, Deserialize, Serialize)]
+/// 字形变换
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct CGTransform {
     #[serde(rename = "@CodePosition", default)]
     pub code_position: i32,
@@ -147,12 +193,12 @@ pub struct CGTransform {
     pub code_count: i32,
     #[serde(rename = "@GlyphCount", default)]
     pub glyph_count: i32,
-    #[serde(rename = "@Glyphs", default)]
+    #[serde(rename = "Glyphs", default)]
     pub glyphs: String,
 }
 
 /// 路径对象
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct PathObject {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -179,7 +225,7 @@ pub struct PathObject {
 }
 
 /// 图像对象
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct ImageObject {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -201,7 +247,7 @@ pub struct Color {
 }
 
 /// 颜色或渐变
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct ColorOrShd {
     #[serde(rename = "@Value", default)]
     pub value: String,
@@ -214,7 +260,7 @@ pub struct ColorOrShd {
 }
 
 /// 轴向渐变
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct AxialShd {
     #[serde(rename = "@StartPoint", default)]
     pub start_point: String,
@@ -225,7 +271,7 @@ pub struct AxialShd {
 }
 
 /// 径向渐变
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct RadialShd {
     #[serde(rename = "@StartPoint", default)]
     pub start_point: String,
@@ -240,7 +286,7 @@ pub struct RadialShd {
 }
 
 /// 渐变段
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Segment {
     #[serde(rename = "@Position", default)]
     pub position: f64,
@@ -249,7 +295,7 @@ pub struct Segment {
 }
 
 /// 资源文件
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename = "Res")]
 pub struct Res {
     #[serde(rename = "@BaseLoc", default)]
@@ -258,15 +304,56 @@ pub struct Res {
     pub fonts: Option<Fonts>,
     #[serde(rename = "MultiMedias", default)]
     pub multi_medias: Option<MultiMedias>,
+    #[serde(rename = "CompositeGraphicUnits", default)]
+    pub composite_graphic_units: Option<CompositeGraphicUnits>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct CompositeGraphicUnits {
+    #[serde(rename = "CompositeGraphicUnit", default)]
+    pub units: Vec<CompositeGraphicUnit>,
+}
+
+/// 复合图元定义（如印章矢量图形）
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct CompositeGraphicUnit {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Width", default)]
+    pub width: f64,
+    #[serde(rename = "@Height", default)]
+    pub height: f64,
+    #[serde(rename = "Content", default)]
+    pub content: CompositeContent,
+}
+
+/// 复合图元内容
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct CompositeContent {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Type", default)]
+    pub content_type: String,
+    #[serde(rename = "PageBlock", default)]
+    pub page_block: Option<CompositePageBlock>,
+}
+
+/// 复合图元页面块
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct CompositePageBlock {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "$value", default)]
+    pub objects: Vec<LayerObject>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Fonts {
     #[serde(rename = "Font", default)]
     pub font: Vec<Font>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct MultiMedias {
     #[serde(rename = "MultiMedia", default)]
     pub multi_media: Vec<MultiMedia>,
@@ -286,7 +373,7 @@ pub struct Font {
 }
 
 /// 多媒体资源
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct MultiMedia {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -297,7 +384,7 @@ pub struct MultiMedia {
 }
 
 /// 签章结构
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename = "Signatures")]
 pub struct Signatures {
     #[serde(rename = "Signature", default)]
@@ -305,7 +392,7 @@ pub struct Signatures {
 }
 
 /// 签章
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Signature {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -316,7 +403,7 @@ pub struct Signature {
 }
 
 /// 签章XML
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename = "Signature")]
 pub struct SignatureXML {
     #[serde(rename = "SignedInfo", default)]
@@ -326,7 +413,7 @@ pub struct SignatureXML {
 }
 
 /// 签章信息
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct SignedInfo {
     #[serde(rename = "StampAnnot", default)]
     pub stamp_annot: Vec<StampAnnot>,
@@ -348,7 +435,7 @@ pub struct StampAnnot {
 }
 
 /// Pattern 图案填充
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Pattern {
     #[serde(rename = "@Width", default)]
     pub width: f64,
@@ -367,7 +454,7 @@ pub struct Pattern {
 }
 
 /// CellContent Pattern 单元格内容
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct CellContent {
     #[serde(rename = "ImageObject", default)]
     pub image_objects: Vec<ImageObject>,
@@ -378,7 +465,7 @@ pub struct CellContent {
 }
 
 /// 页面注释列表
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename = "PageAnnot")]
 pub struct PageAnnot {
     #[serde(rename = "Annot", default)]
@@ -386,7 +473,7 @@ pub struct PageAnnot {
 }
 
 /// 注释元素
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct AnnotElement {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -401,7 +488,7 @@ pub struct AnnotElement {
 }
 
 /// 注释外观
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct AnnotAppearance {
     #[serde(rename = "@Boundary", default)]
     pub boundary: String,
@@ -410,7 +497,7 @@ pub struct AnnotAppearance {
 }
 
 /// 注释页面块
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct AnnotPageBlock {
     #[serde(rename = "@ID", default)]
     pub id: String,
@@ -419,7 +506,7 @@ pub struct AnnotPageBlock {
 }
 
 /// 印章数据 (Seal.xml)
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename = "Seal")]
 pub struct SealXML {
     #[serde(rename = "SealID", default)]
@@ -433,7 +520,7 @@ pub struct SealXML {
 }
 
 /// 印章图片
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct SealPicture {
     #[serde(rename = "@Type", default)]
     pub picture_type: String,

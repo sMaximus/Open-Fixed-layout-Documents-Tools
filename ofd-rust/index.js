@@ -59,20 +59,46 @@ function scrollToPage(index) {
 async function loadOFDFonts() {
   try {
     const fonts = parser.get_fonts();
+    console.log("[字体] get_fonts 返回:", fonts);
     if (!fonts || fonts.length === 0) return;
-    const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataURL);
+    const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataUrl);
+    console.log(`[字体] 嵌入字体数量: ${embeddedFonts.length}`);
+
+    // 清理旧的字体样式
+    let styleEl = document.getElementById("ofd-font-styles");
+    if (styleEl) styleEl.remove();
+    styleEl = document.createElement("style");
+    styleEl.id = "ofd-font-styles";
+    let cssText = "";
+
     for (const font of embeddedFonts) {
       const fontName = `OFD_Font_${font.id}`;
       if (loadedFonts.has(fontName)) continue;
       try {
-        const fontFace = new FontFace(fontName, `url(${font.dataURL})`);
+        // 通过 CSS @font-face 注册字体
+        cssText += `@font-face { font-family: '${fontName}'; src: url(${font.dataUrl}); }\n`;
+
+        // 同时通过 FontFace API 加载
+        const fontFace = new FontFace(fontName, `url(${font.dataUrl})`);
         await fontFace.load();
         document.fonts.add(fontFace);
         loadedFonts.set(fontName, fontFace);
+        console.log(
+          `[字体] 已加载: ${fontName} (${font.fontName}/${font.familyName})`,
+        );
       } catch (err) {
         console.warn(`字体加载失败: ${fontName}`, err);
       }
     }
+
+    if (cssText) {
+      styleEl.textContent = cssText;
+      document.head.appendChild(styleEl);
+    }
+
+    // 等待所有字体就绪
+    await document.fonts.ready;
+    console.log(`[字体] 所有字体就绪, 已加载 ${loadedFonts.size} 个`);
   } catch (err) {
     console.warn("加载字体出错:", err);
   }
@@ -216,14 +242,35 @@ async function renderPageContent(pageIndex) {
     svgContainer.innerHTML = page.svg;
     container.appendChild(svgContainer);
 
+    // 注入字体样式到 SVG 内部，确保 SVG text 元素能使用嵌入字体
     const svgEl = svgContainer.querySelector("svg");
     if (svgEl) {
+      if (loadedFonts.size > 0) {
+        const existingStyle = document.getElementById("ofd-font-styles");
+        if (existingStyle && existingStyle.textContent) {
+          const svgStyle = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "style",
+          );
+          svgStyle.textContent = existingStyle.textContent;
+          svgEl.insertBefore(svgStyle, svgEl.firstChild);
+        }
+      }
+
       const paths = svgEl.querySelectorAll("path").length;
       const images = svgEl.querySelectorAll("image").length;
       const texts = svgEl.querySelectorAll("text").length;
       console.log(
         `[SVG] 页面${pageIndex + 1}: paths=${paths}, images=${images}, texts=${texts}`,
       );
+      // 调试：输出前几个 text 元素的 font-family
+      const textEls = svgEl.querySelectorAll("text");
+      for (let i = 0; i < Math.min(3, textEls.length); i++) {
+        const t = textEls[i];
+        console.log(
+          `[SVG] text[${i}]: font-family="${t.getAttribute("font-family")}", content="${t.textContent}"`,
+        );
+      }
     }
   }
 
@@ -313,31 +360,136 @@ async function loadAndRenderPage(pageIndex) {
 }
 
 // XML 弹窗逻辑
+
+function getFileIcon(name) {
+  const ext = name.split(".").pop().toLowerCase();
+  if (ext === "xml") return "📄";
+  if (["ttf", "otf", "ttc", "woff", "woff2"].includes(ext)) return "🔤";
+  if (["png", "jpg", "jpeg", "gif", "bmp", "svg", "jb2"].includes(ext))
+    return "🖼️";
+  if (["dat", "esl", "seal"].includes(ext)) return "🔏";
+  return "📎";
+}
+
+function buildFileTree(files) {
+  const root = new Map(); // key -> { children: Map, files: [] }
+  for (const f of files) {
+    const parts = f.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i];
+      if (!node.has(seg)) node.set(seg, { children: new Map(), files: [] });
+      node = node.get(seg).children;
+    }
+    const fileName = parts[parts.length - 1];
+    // 如果只有文件名没有目录，放到根
+    if (parts.length === 1) {
+      if (!node.has("__files__"))
+        node.set("__files__", { children: new Map(), files: [] });
+      node.get("__files__").files.push({ fullPath: f, fileName });
+    } else {
+      const parentSeg = parts[parts.length - 2];
+      // 回溯找到父节点
+      let parent = root;
+      for (let i = 0; i < parts.length - 2; i++)
+        parent = parent.get(parts[i]).children;
+      parent.get(parentSeg).files.push({ fullPath: f, fileName });
+    }
+  }
+  return root;
+}
+
+function countTreeFiles(nodeMap) {
+  let count = 0;
+  for (const [key, val] of nodeMap) {
+    if (key === "__files__") {
+      count += val.files.length;
+      continue;
+    }
+    count += val.files.length + countTreeFiles(val.children);
+  }
+  return count;
+}
+
+function renderTreeNode(nodeMap, depth) {
+  let html = "";
+  // 先渲染根级散落文件
+  if (nodeMap.has("__files__")) {
+    for (const item of nodeMap.get("__files__").files) {
+      const isXml = item.fullPath.toLowerCase().endsWith(".xml");
+      html += `<div class="tree-file" data-file="${item.fullPath}" data-xml="${isXml}" title="${item.fullPath}" style="padding-left:${depth * 16 + 12}px">
+        <span class="tree-file-icon">${getFileIcon(item.fileName)}</span>
+        <span class="tree-file-name">${item.fileName}</span>
+      </div>`;
+    }
+  }
+  for (const [key, val] of nodeMap) {
+    if (key === "__files__") continue;
+    const subCount = val.files.length + countTreeFiles(val.children);
+    html += `<div class="tree-folder">
+      <div class="tree-folder-header" style="padding-left:${depth * 16 + 4}px">
+        <span class="tree-folder-arrow">▶</span>
+        <span class="tree-folder-icon">📁</span>
+        <span class="tree-folder-name">${key}</span>
+        <span class="tree-folder-count">${subCount}</span>
+      </div>
+      <div class="tree-folder-children">`;
+    // 子文件夹
+    html += renderTreeNode(val.children, depth + 1);
+    // 当前文件夹的文件
+    for (const item of val.files) {
+      const isXml = item.fullPath.toLowerCase().endsWith(".xml");
+      html += `<div class="tree-file" data-file="${item.fullPath}" data-xml="${isXml}" title="${item.fullPath}" style="padding-left:${(depth + 1) * 16 + 12}px">
+        <span class="tree-file-icon">${getFileIcon(item.fileName)}</span>
+        <span class="tree-file-name">${item.fileName}</span>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+  return html;
+}
+
 function showXmlModal() {
   if (!parser) return;
   const modal = document.getElementById("xmlModal");
   const fileList = document.getElementById("xmlFileList");
   const files = parser.get_files();
 
-  let html = "";
-  for (const f of files) {
-    const isXml = f.toLowerCase().endsWith(".xml");
-    html += `<div class="file-item${isXml ? "" : " non-xml"}" data-file="${f}" title="${f}">${f}</div>`;
-  }
-  fileList.innerHTML = html;
+  const tree = buildFileTree(files);
+  fileList.innerHTML = renderTreeNode(tree, 0);
 
-  fileList.querySelectorAll(".file-item:not(.non-xml)").forEach((item) => {
+  // 文件夹折叠/展开
+  fileList.querySelectorAll(".tree-folder-header").forEach((header) => {
+    header.addEventListener("click", () => {
+      header.parentElement.classList.toggle("collapsed");
+    });
+  });
+
+  // 文件点击
+  fileList.querySelectorAll(".tree-file").forEach((item) => {
     item.addEventListener("click", () => {
       fileList
-        .querySelectorAll(".file-item")
+        .querySelectorAll(".tree-file")
         .forEach((el) => el.classList.remove("active"));
       item.classList.add("active");
       const name = item.dataset.file;
+      const isXml = item.dataset.xml === "true";
       document.getElementById("xmlFileName").textContent = name;
-      const content = parser.read_file_text(name);
-      document.getElementById("xmlContent").textContent = formatXml(content);
+      if (isXml) {
+        const content = parser.read_file_text(name);
+        document.getElementById("xmlContent").innerHTML = highlightXml(
+          formatXml(content),
+        );
+      } else {
+        document.getElementById("xmlContent").innerHTML =
+          '<span style="color:#888;font-size:14px;">二进制文件，无法预览</span>';
+      }
     });
   });
+
+  // 默认选中第一个 XML 文件
+  const firstXml = fileList.querySelector('.tree-file[data-xml="true"]');
+  if (firstXml) firstXml.click();
 
   modal.classList.add("active");
 }
@@ -347,7 +499,6 @@ function hideXmlModal() {
 }
 
 function formatXml(xml) {
-  // 简单的 XML 格式化
   let formatted = "";
   let indent = 0;
   const parts = xml.replace(/(>)\s*(<)/g, "$1\n$2").split("\n");
@@ -367,6 +518,57 @@ function formatXml(xml) {
     }
   }
   return formatted.trim();
+}
+
+function escHtml(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function highlightXml(xml) {
+  const lines = xml.split("\n");
+  let result = "";
+  for (let i = 0; i < lines.length; i++) {
+    const line = escHtml(lines[i]);
+    let h = line;
+
+    // XML 声明
+    h = h.replace(
+      /^(\s*)(&lt;\?)(.*?)(\?&gt;)$/,
+      '$1<span class="xml-bracket">$2</span><span class="xml-decl">$3</span><span class="xml-bracket">$4</span>',
+    );
+
+    // 标签名
+    h = h.replace(
+      /(&lt;\/?)([A-Za-z_][\w:.-]*)/g,
+      '<span class="xml-bracket">$1</span><span class="xml-tag">$2</span>',
+    );
+
+    // 闭合括号
+    h = h.replace(/(\/?)(&gt;)/g, '<span class="xml-bracket">$1$2</span>');
+
+    // 属性
+    h = h.replace(
+      /\b([A-Za-z_][\w:.-]*)=(&quot;)(.*?)(&quot;)/g,
+      '<span class="xml-attr">$1</span>=<span class="xml-value">$2$3$4</span>',
+    );
+
+    // 标签间的文本内容（非空白）
+    h = h.replace(
+      /(<\/span>)([^<]+)(<span class="xml-bracket">)/g,
+      (_, before, text, after) => {
+        if (text.trim())
+          return `${before}<span class="xml-text">${text}</span>${after}`;
+        return `${before}${text}${after}`;
+      },
+    );
+
+    result += `<span class="xml-line"><span class="xml-linenum">${String(i + 1).padStart(4)}</span>${h}</span>\n`;
+  }
+  return result;
 }
 
 window.showXmlModal = showXmlModal;

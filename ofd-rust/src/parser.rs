@@ -27,6 +27,7 @@ pub struct Parser {
     pub fonts: HashMap<String, Font>,
     pub images: HashMap<String, Vec<u8>>,
     pub font_files: HashMap<String, Vec<u8>>,
+    pub composite_units: HashMap<String, CompositeGraphicUnit>,
 }
 
 impl Parser {
@@ -60,6 +61,7 @@ impl Parser {
             fonts: HashMap::new(),
             images: HashMap::new(),
             font_files: HashMap::new(),
+            composite_units: HashMap::new(),
         })
     }
 
@@ -100,6 +102,7 @@ impl Parser {
 
                 if let Ok(data) = doc_data {
                     let doc_xml = Self::remove_namespace_prefix(&String::from_utf8_lossy(&data));
+                    let doc_xml = Self::dedup_xml_elements(&doc_xml);
                     self.document = match quick_xml::de::from_str(&doc_xml) {
                         Ok(d) => Some(d),
                         Err(e) => {
@@ -177,7 +180,72 @@ impl Parser {
         let result = re1.replace_all(xml_str, "<$1");
         
         let re2 = Regex::new(r#"\s+xmlns:[^=]+="[^"]*""#).unwrap();
-        re2.replace_all(&result, "").to_string()
+        let result = re2.replace_all(&result, "").to_string();
+
+        // 保护 TextCode 中的文本内容不被 quick_xml trim
+        // 将 <TextCode ...>text</TextCode> 中的文本空格替换为 \u{00A0}(NBSP)
+        // 这样 quick_xml 的 $text 不会 trim 掉它们
+        Self::preserve_textcode_spaces(&result)
+    }
+
+    /// 保护 TextCode 元素中的前导/尾部空格
+    fn preserve_textcode_spaces(xml_str: &str) -> String {
+        let re = Regex::new(r"(?s)(<TextCode[^>]*>)(.*?)(</TextCode>)").unwrap();
+        re.replace_all(xml_str, |caps: &regex::Captures| {
+            let open_tag = &caps[1];
+            let text = &caps[2];
+            let close_tag = &caps[3];
+
+            // 如果文本中包含子元素（如 CGTransform），不处理
+            if text.contains('<') {
+                return format!("{}{}{}", open_tag, text, close_tag);
+            }
+
+            // 将前导和尾部的普通空格替换为 NBSP(\u{00A0})
+            let chars: Vec<char> = text.chars().collect();
+            let mut result_chars = chars.clone();
+
+            // 前导空格
+            for i in 0..result_chars.len() {
+                if result_chars[i] == ' ' {
+                    result_chars[i] = '\u{00A0}';
+                } else {
+                    break;
+                }
+            }
+            // 尾部空格
+            for i in (0..result_chars.len()).rev() {
+                if result_chars[i] == ' ' {
+                    result_chars[i] = '\u{00A0}';
+                } else {
+                    break;
+                }
+            }
+
+            let preserved: String = result_chars.into_iter().collect();
+            format!("{}{}{}", open_tag, preserved, close_tag)
+        }).to_string()
+    }
+
+    /// 合并重复的XML元素（如多个 PublicRes、DocumentRes）
+    /// quick-xml 反序列化不支持重复同名元素，去除重复只保留第一个
+    pub fn dedup_xml_elements(xml_str: &str) -> String {
+        let mut result = xml_str.to_string();
+        let tags = ["PublicRes", "DocumentRes"];
+        for tag in &tags {
+            let pattern = format!(r"<{0}>[^<]*</{0}>", tag);
+            let re = match Regex::new(&pattern) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let matches: Vec<_> = re.find_iter(&result).map(|m| (m.start(), m.end())).collect();
+            if matches.len() > 1 {
+                for &(start, end) in matches[1..].iter().rev() {
+                    result.replace_range(start..end, "");
+                }
+            }
+        }
+        result
     }
 
     /// 获取文件列表
@@ -328,6 +396,28 @@ impl Parser {
                     let mut font_clone = font.clone();
                     if !font.font_file.is_empty() {
                         font_clone.font_file = format!("{}/{}/{}", base_path, res.base_loc, font.font_file);
+                        // 预加载字体文件数据，标记该字体有嵌入文件
+                        match self.read_file(&font_clone.font_file) {
+                            Ok(font_data) if !font_data.is_empty() => {
+                                web_sys::console::log_1(&format!(
+                                    "[资源] 字体加载成功: id={}, path='{}', size={}bytes",
+                                    font.id, font_clone.font_file, font_data.len()
+                                ).into());
+                                self.font_files.insert(font.id.clone(), font_data);
+                            }
+                            Ok(_) => {
+                                web_sys::console::warn_1(&format!(
+                                    "[资源] 字体文件为空: id={}, path='{}'",
+                                    font.id, font_clone.font_file
+                                ).into());
+                            }
+                            Err(e) => {
+                                web_sys::console::warn_1(&format!(
+                                    "[资源] 字体文件读取失败: id={}, path='{}', err={}",
+                                    font.id, font_clone.font_file, e
+                                ).into());
+                            }
+                        }
                     }
                     self.fonts.insert(font.id.clone(), font_clone);
                 }
@@ -342,9 +432,28 @@ impl Parser {
                     }
                 }
             }
+
+            // 加载复合图元
+            if let Some(cgu) = &res.composite_graphic_units {
+                for unit in &cgu.units {
+                    self.composite_units.insert(unit.id.clone(), unit.clone());
+                }
+            }
         }
 
         let _ = doc_base;
+
+        // 调试：输出已加载的字体信息
+        web_sys::console::log_1(&format!(
+            "[资源] load_resources 完成: fonts={}, font_files={}, images={}, composites={}",
+            self.fonts.len(), self.font_files.len(), self.images.len(), self.composite_units.len()
+        ).into());
+        for (id, font) in &self.fonts {
+            web_sys::console::log_1(&format!(
+                "[资源] font id={}, name='{}', family='{}'",
+                id, font.font_name, font.family_name
+            ).into());
+        }
     }
 
     /// 懒加载图片

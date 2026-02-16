@@ -260,6 +260,54 @@ impl Parser {
             for text in layer.text_objects() {
                 self.extract_text(result, text, scale);
             }
+
+            // 提取复合对象
+            for comp in layer.composite_objects() {
+                self.extract_composite_object(result, comp, scale);
+            }
+        }
+    }
+
+    fn extract_composite_object(&mut self, result: &mut PageRenderResult, comp: &CompositeObject, scale: f64) {
+        let unit = match self.composite_units.get(&comp.resource_id) {
+            Some(u) => u.clone(),
+            None => return,
+        };
+
+        let (cx, cy, cw, ch) = parse_boundary(&comp.boundary);
+        let sx = if unit.width > 0.0 { cw / unit.width } else { 1.0 };
+        let sy = if unit.height > 0.0 { ch / unit.height } else { 1.0 };
+
+        let page_block = match &unit.content.page_block {
+            Some(pb) => pb,
+            None => return,
+        };
+
+        for obj in &page_block.objects {
+            match obj {
+                LayerObject::PathObject(path_obj) => {
+                    // 调整 boundary 坐标
+                    let mut adjusted = path_obj.clone();
+                    let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
+                    adjusted.boundary = format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                    self.extract_path(result, &adjusted, scale, result.width, result.height);
+                }
+                LayerObject::ImageObject(img) => {
+                    let mut adjusted = img.clone();
+                    let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
+                    adjusted.boundary = format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                    self.extract_image(result, &adjusted, scale);
+                }
+                LayerObject::TextObject(text) => {
+                    let mut adjusted = text.clone();
+                    let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
+                    adjusted.boundary = format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                    // 缩放字体大小
+                    adjusted.size *= sy;
+                    self.extract_text(result, &adjusted, scale);
+                }
+                LayerObject::CompositeObject(_) => {}
+            }
         }
     }
 
@@ -590,13 +638,32 @@ impl Parser {
 
         let font_id = text.font.clone();
         let font_family = if let Some(font) = self.fonts.get(&text.font) {
-            if self.font_files.contains_key(&text.font) {
-                format!("'OFD_Font_{}', '{}', '{}', SimSun, serif", text.font, font.font_name, font.family_name)
-            } else {
-                format!("'{}', '{}', SimSun, serif", font.font_name, font.family_name)
+            let has_file = self.font_files.contains_key(&text.font);
+            let mut families = Vec::new();
+            if has_file {
+                families.push(format!("'OFD_Font_{}'", text.font));
             }
+            if !font.font_name.is_empty() {
+                let (clean_name, _) = crate::svg_render::strip_vertical_prefix(&font.font_name);
+                families.push(format!("'{}'", clean_name));
+                for alias in crate::svg_render::get_font_aliases(&font.font_name) {
+                    families.push(format!("'{}'", alias));
+                }
+            }
+            if !font.family_name.is_empty() && font.family_name != font.font_name {
+                let (clean_name, _) = crate::svg_render::strip_vertical_prefix(&font.family_name);
+                families.push(format!("'{}'", clean_name));
+                for alias in crate::svg_render::get_font_aliases(&font.family_name) {
+                    let a = format!("'{}'", alias);
+                    if !families.contains(&a) {
+                        families.push(a);
+                    }
+                }
+            }
+            families.push(crate::svg_render::cjk_fallback_fonts().to_string());
+            families.join(", ")
         } else {
-            "SimSun, serif".to_string()
+            crate::svg_render::cjk_fallback_fonts().to_string()
         };
 
         let font_size = text.size * scale;
@@ -617,11 +684,11 @@ impl Parser {
             fill_color.clone()
         };
 
-        let should_fill = true;
+        let should_fill = text.fill;
 
         let mut line_width = text.line_width * scale;
         if line_width == 0.0 && text.stroke {
-            line_width = 1.0;
+            line_width = 0.5;
         }
 
         // 解析 CTM
@@ -648,7 +715,7 @@ impl Parser {
             let mut current_x = tc_x;
 
             for (i, ch) in chars.iter().enumerate() {
-                if *ch != ' ' && *ch != '\u{3000}' {
+                if *ch != ' ' && *ch != '\u{3000}' && *ch != '\u{00A0}' {
                     result.text_layer.push(TextItem {
                         text: ch.to_string(),
                         x: current_x,
@@ -700,7 +767,14 @@ impl Parser {
                 has_file: false,
             };
 
-            if !font.font_file.is_empty() {
+            // 优先使用已加载的字体文件数据
+            if let Some(font_data) = self.font_files.get(id) {
+                if !font_data.is_empty() {
+                    info.has_file = true;
+                    let mime_type = detect_font_mime(font_data);
+                    info.data_url = Some(format!("data:{};base64,{}", mime_type, BASE64.encode(font_data)));
+                }
+            } else if !font.font_file.is_empty() {
                 if let Ok(font_data) = self.read_file(&font.font_file) {
                     if !font_data.is_empty() {
                         info.has_file = true;

@@ -15,7 +15,7 @@ const mimeTypes = {
 const server = http.createServer((req, res) => {
   let filePath = "." + req.url;
   if (filePath === "./") {
-    filePath = "./example.html";
+    filePath = "./index.html";
   }
 
   const extname = path.extname(filePath);
@@ -39,5 +39,4 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}/`);
-  console.log(`Open http://localhost:${PORT}/example.html`);
 });
