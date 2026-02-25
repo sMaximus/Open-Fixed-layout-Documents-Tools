@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OFD Viewer 组件示例</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f0f0f0;
+      }
+      .toolbar {
+        background: #333;
+        color: #fff;
+        padding: 12px 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .toolbar h2 {
+        font-size: 16px;
+        font-weight: 500;
+      }
+      .toolbar button {
+        background: #e94560;
+        color: #fff;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .toolbar button:hover {
+        background: #ff6b6b;
+      }
+      .toolbar .status {
+        margin-left: auto;
+        color: #aaa;
+        font-size: 13px;
+      }
+      #viewer {
+        width: 100%;
+        height: calc(100vh - 48px);
+        background: #e8e8e8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <h2>OFD Viewer 组件示例</h2>
+      <button onclick="document.getElementById('fileInput').click()">
+        选择 OFD 文件
+      </button>
+      <input type="file" id="fileInput" accept=".ofd" style="display: none" />
+      <span class="status" id="status">加载中...</span>
+    </div>
+    <div id="viewer"></div>
+
+    <script type="module">
+      // 引入 WASM 模块和组件
+      import initWasm, { OFDParser } from "../pkg/ofd_rust.js";
+      import { OFDViewer } from "./ofd-viewer.esm.js";
+
+      const statusEl = document.getElementById("status");
+
+      // 创建 viewer 实例
+      const viewer = new OFDViewer({
+        container: document.getElementById("viewer"),
+        onStatus: (msg) => (statusEl.textContent = msg),
+        onPageCount: (count) => console.log(`文档共 ${count} 页`),
+        onError: (err) => console.error("OFD 错误:", err),
+      });
+
+      // 初始化 WASM
+      await viewer.init(initWasm, OFDParser);
+
+      // 文件选择
+      document
+        .getElementById("fileInput")
+        .addEventListener("change", async (e) => {
+          const file = e.target.files[0];
+          if (file) await viewer.loadFile(file);
+        });
+
+      // 拖拽支持
+      document.body.addEventListener("dragover", (e) => {
+        e.preventDefault();
+      });
+      document.body.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files[0];
+        if (file && file.name.toLowerCase().endsWith(".ofd")) {
+          await viewer.loadFile(file);
+        }
+      });
+    </script>
+  </body>
+</html>

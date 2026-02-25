@@ -1,0 +1,36 @@
+{
+  "name": "ofd-viewer",
+  "version": "1.0.0",
+  "description": "OFD 文档查看器组件 (基于 Rust WASM)",
+  "main": "dist/ofd-viewer.umd.js",
+  "module": "dist/ofd-viewer.esm.js",
+  "exports": {
+    ".": {
+      "import": "./dist/ofd-viewer.esm.js",
+      "require": "./dist/ofd-viewer.umd.js"
+    },
+    "./pkg/*": "./pkg/*"
+  },
+  "files": [
+    "dist/",
+    "pkg/",
+    "src-js/"
+  ],
+  "scripts": {
+    "build:wasm": "cd . && wasm-pack build --target web --out-dir pkg",
+    "build:js": "rollup -c rollup.config.mjs",
+    "build": "npm run build:wasm && npm run build:js",
+    "dev": "node server.js"
+  },
+  "devDependencies": {
+    "rollup": "^4.0.0",
+    "@rollup/plugin-terser": "^0.4.0"
+  },
+  "keywords": [
+    "ofd",
+    "viewer",
+    "document",
+    "wasm"
+  ],
+  "license": "MIT"
+}
