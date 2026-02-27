@@ -28,6 +28,7 @@ pub struct Parser {
     pub images: HashMap<String, Vec<u8>>,
     pub font_files: HashMap<String, Vec<u8>>,
     pub composite_units: HashMap<String, CompositeGraphicUnit>,
+    pub draw_params: HashMap<String, DrawParam>,
 }
 
 impl Parser {
@@ -62,6 +63,7 @@ impl Parser {
             images: HashMap::new(),
             font_files: HashMap::new(),
             composite_units: HashMap::new(),
+            draw_params: HashMap::new(),
         })
     }
 
@@ -439,14 +441,51 @@ impl Parser {
                     self.composite_units.insert(unit.id.clone(), unit.clone());
                 }
             }
+
+            // 加载绘制参数（DrawParam 直接在 Res 下）
+            for dp in &res.draw_params {
+                self.draw_params.insert(dp.id.clone(), dp.clone());
+            }
+            // 加载绘制参数（DrawParams 包装元素下）
+            if let Some(ref dps) = res.draw_params_wrapped {
+                for dp in &dps.draw_param {
+                    self.draw_params.insert(dp.id.clone(), dp.clone());
+                }
+            }
+        }
+
+        // 处理 DrawParam 的 Relative 继承
+        let dp_ids: Vec<String> = self.draw_params.keys().cloned().collect();
+        for id in dp_ids {
+            let relative_id = self.draw_params.get(&id).map(|dp| dp.relative.clone()).unwrap_or_default();
+            if !relative_id.is_empty() {
+                if let Some(parent) = self.draw_params.get(&relative_id).cloned() {
+                    let child = self.draw_params.get_mut(&id).unwrap();
+                    if child.stroke_color.is_none() {
+                        child.stroke_color = parent.stroke_color.clone();
+                    }
+                    if child.fill_color.is_none() {
+                        child.fill_color = parent.fill_color.clone();
+                    }
+                    if child.line_width == 0.0 && parent.line_width > 0.0 {
+                        child.line_width = parent.line_width;
+                    }
+                    if child.join.is_empty() {
+                        child.join = parent.join.clone();
+                    }
+                    if child.cap.is_empty() {
+                        child.cap = parent.cap.clone();
+                    }
+                }
+            }
         }
 
         let _ = doc_base;
 
-        // 调试：输出已加载的字体信息
+        // 调试：输出已加载的资源信息
         web_sys::console::log_1(&format!(
-            "[资源] load_resources 完成: fonts={}, font_files={}, images={}, composites={}",
-            self.fonts.len(), self.font_files.len(), self.images.len(), self.composite_units.len()
+            "[资源] load_resources 完成: fonts={}, font_files={}, images={}, composites={}, draw_params={}",
+            self.fonts.len(), self.font_files.len(), self.images.len(), self.composite_units.len(), self.draw_params.len()
         ).into());
         for (id, font) in &self.fonts {
             web_sys::console::log_1(&format!(

@@ -1,5 +1,5 @@
 //! SVG 渲染模块
-//! 将 OFD 页面渲染为 SVG 字符串，文字使用 SVG text 元素回退渲染
+//! 将 OFD 页面渲染为 SVG 字符串，文字转为矢量路径（text-to-path）实现高清渲染
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::fmt::Write;
@@ -8,6 +8,66 @@ use crate::page::*;
 use crate::parser::*;
 use crate::render::*;
 
+/// 字形轮廓构建器：将 ttf-parser 的回调转为 SVG path d 属性
+struct GlyphPathBuilder {
+    path: String,
+}
+
+impl GlyphPathBuilder {
+    fn new() -> Self {
+        GlyphPathBuilder { path: String::new() }
+    }
+}
+
+impl ttf_parser::OutlineBuilder for GlyphPathBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let _ = write!(self.path, "M{:.4},{:.4} ", x, -y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        let _ = write!(self.path, "L{:.4},{:.4} ", x, -y);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let _ = write!(self.path, "Q{:.4},{:.4} {:.4},{:.4} ", x1, -y1, x, -y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let _ = write!(self.path, "C{:.4},{:.4} {:.4},{:.4} {:.4},{:.4} ", x1, -y1, x2, -y2, x, -y);
+    }
+    fn close(&mut self) {
+        self.path.push_str("Z ");
+    }
+}
+
+/// 从字体数据中提取字符的 SVG path
+/// 返回 (path_d, advance_width) — advance_width 是字体单位的前进宽度
+fn glyph_to_svg_path(font_data: &[u8], ch: char) -> Option<(String, f64)> {
+    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    let glyph_id = face.glyph_index(ch)?;
+    let mut builder = GlyphPathBuilder::new();
+    let _bbox = face.outline_glyph(glyph_id, &mut builder)?;
+    if builder.path.is_empty() {
+        return None;
+    }
+    let advance = face.glyph_hor_advance(glyph_id)
+        .map(|a| a as f64)
+        .unwrap_or(0.0);
+    Some((builder.path, advance))
+}
+
+/// 通过 GlyphID 直接提取字形的 SVG path（用于 CGTransform 映射）
+fn glyph_id_to_svg_path(font_data: &[u8], glyph_id: u16) -> Option<(String, f64)> {
+    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    let gid = ttf_parser::GlyphId(glyph_id);
+    let mut builder = GlyphPathBuilder::new();
+    let _bbox = face.outline_glyph(gid, &mut builder)?;
+    if builder.path.is_empty() {
+        return None;
+    }
+    let advance = face.glyph_hor_advance(gid)
+        .map(|a| a as f64)
+        .unwrap_or(0.0);
+    Some((builder.path, advance))
+}
+
 /// SVG 渲染结果
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,10 +75,15 @@ pub struct SVGRenderResult {
     pub page_index: usize,
     pub width: f64,
     pub height: f64,
+    /// 高清倍率，前端需要用此值缩放文本蒙层坐标
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hi_dpi: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub svg: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_overlay: Option<Vec<TextOverlayItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub html_texts: Option<Vec<HtmlTextItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -31,6 +96,22 @@ pub struct TextOverlayItem {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// HTML 文字渲染项（用于无嵌入字体的文字，HTML 渲染比 SVG 更清晰）
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HtmlTextItem {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub font_size: f64,
+    pub font_family: String,
+    pub color: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_weight: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_style: Option<String>,
 }
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -127,7 +208,8 @@ impl Parser {
         };
 
         let (width, height) = self.get_page_size_from_page(&page);
-        let scale = 3.78;
+        let hi_dpi = 10.0_f64; // 高清倍率：内部以 10x 分辨率渲染，CSS 缩回 1x 显示，文字边缘如刀锋般锐利
+        let scale = 3.78_f64 * hi_dpi; // mm → px（高清）
         let px_w = width * scale;
         let px_h = height * scale;
         result.width = width;
@@ -137,6 +219,25 @@ impl Parser {
 
         let mut svg_parts: Vec<String> = Vec::new();
         let mut text_overlay: Vec<TextOverlayItem> = Vec::new();
+        let mut html_texts: Vec<HtmlTextItem> = Vec::new();
+
+        // 嵌入字体 @font-face 到 SVG 内部
+        let mut font_css = String::new();
+        for (id, _font) in &self.fonts {
+            if let Some(font_data) = self.font_files.get(id) {
+                if !font_data.is_empty() {
+                    let mime_type = detect_font_mime(font_data);
+                    let b64 = BASE64.encode(font_data);
+                    let _ = write!(font_css,
+                        "@font-face {{ font-family: 'OFD_Font_{}'; src: url('data:{};base64,{}'); }}\n",
+                        id, mime_type, b64
+                    );
+                }
+            }
+        }
+        if !font_css.is_empty() {
+            svg_parts.push(format!("<defs><style>{}</style></defs>", font_css));
+        }
 
         // 白色背景
         svg_parts.push(format!(
@@ -164,8 +265,16 @@ impl Parser {
                 "[SVG渲染] layer[{}]: paths={}, images={}, texts={}, composites={}",
                 li, paths.len(), imgs.len(), txts.len(), composites.len()
             ).into());
+
+            // 解析 Layer 级别的 DrawParam
+            let layer_dp = if !layer.draw_param.is_empty() {
+                self.draw_params.get(&layer.draw_param).cloned()
+            } else {
+                None
+            };
+
             for path_obj in paths {
-                if let Some(s) = self.path_object_to_svg(path_obj, scale, width, height) {
+                if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, width, height, &layer_dp) {
                     svg_parts.push(s);
                 }
             }
@@ -175,31 +284,38 @@ impl Parser {
                 }
             }
             for text in txts {
-                let (text_svgs, overlays) = self.render_text_svg(text, scale);
+                let (text_svgs, overlays, html_items) = self.render_text_svg(text, scale, &layer_dp);
                 svg_parts.extend(text_svgs);
                 text_overlay.extend(overlays);
+                html_texts.extend(html_items);
             }
             for comp in composites {
                 self.render_composite_object_svg(&mut svg_parts, &mut text_overlay, comp, scale, width, height);
             }
         }
 
-        // 注释图片
-        self.load_page_annot_svg(&mut svg_parts, scale, page_index);
+        // 注释
+        self.load_page_annot_svg(&mut svg_parts, &mut text_overlay, scale, page_index, width, height);
 
         // 印章
         self.load_stamps_svg(&mut svg_parts, &mut text_overlay, scale, page_index, width, height);
 
+        // SVG 不设固定 width/height，只用 viewBox + CSS 100% 填充容器
+        // 这样避免 SVG 固有尺寸与容器尺寸不一致导致的二次缩放模糊
         let svg = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{:.2}" height="{:.2}" viewBox="0 0 {:.2} {:.2}">
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {:.2} {:.2}" text-rendering="geometricPrecision" shape-rendering="geometricPrecision" color-interpolation="linearRGB">
 {}
 </svg>"#,
-            px_w, px_h, px_w, px_h,
+            px_w, px_h,
             svg_parts.join("\n")
         );
 
         result.svg = Some(svg);
+        result.hi_dpi = Some(hi_dpi);
         result.text_overlay = Some(text_overlay);
+        if !html_texts.is_empty() {
+            result.html_texts = Some(html_texts);
+        }
         result
     }
 
@@ -266,8 +382,15 @@ impl Parser {
 
             let tpl_layers = self.get_page_layers(&tpl_page);
             for layer in &tpl_layers {
+                // 解析模板 Layer 级别的 DrawParam
+                let layer_dp = if !layer.draw_param.is_empty() {
+                    self.draw_params.get(&layer.draw_param).cloned()
+                } else {
+                    None
+                };
+
                 for path_obj in layer.path_objects() {
-                    if let Some(s) = self.path_object_to_svg(path_obj, scale, page_w, page_h) {
+                    if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, &layer_dp) {
                         svg_parts.push(s);
                     }
                 }
@@ -277,7 +400,7 @@ impl Parser {
                     }
                 }
                 for text in layer.text_objects() {
-                    let (text_svgs, overlays) = self.render_text_svg(text, scale);
+                    let (text_svgs, overlays, _html_items) = self.render_text_svg(text, scale, &layer_dp);
                     svg_parts.extend(text_svgs);
                     text_overlay.extend(overlays);
                 }
@@ -287,11 +410,25 @@ impl Parser {
 
     /// 将 PathObject 转换为 SVG path 元素
     fn path_object_to_svg(&self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64) -> Option<String> {
+        self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, &None)
+    }
+
+    /// 将 PathObject 转换为 SVG path 元素（支持 DrawParam 继承）
+    fn path_object_to_svg_with_dp(&self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64, layer_dp: &Option<DrawParam>) -> Option<String> {
         if path_obj.abbreviated_data.is_empty() {
             return None;
         }
 
-        let (bx, by, _, _) = parse_boundary(&path_obj.boundary);
+        // 解析对象级别的 DrawParam，合并 Layer 级别的
+        let obj_dp = if !path_obj.draw_param.is_empty() {
+            self.draw_params.get(&path_obj.draw_param).cloned()
+        } else {
+            None
+        };
+        // 优先级: 对象属性 > 对象DrawParam > Layer DrawParam
+        let effective_dp = obj_dp.as_ref().or(layer_dp.as_ref());
+
+        let (bx, by, bw, bh) = parse_boundary(&path_obj.boundary);
 
         let ctm = if !path_obj.ctm.is_empty() {
             parse_ctm(&path_obj.ctm)
@@ -395,13 +532,17 @@ impl Parser {
                 );
                 fill_color = format!("url(#{})", grad_id);
             }
+        } else if path_obj.fill {
+            // 对象没有 FillColor 但 Fill=true，从 DrawParam 继承
+            if let Some(dp) = effective_dp {
+                if let Some(ref fc) = dp.fill_color {
+                    if !fc.value.is_empty() {
+                        fill_color = parse_color(&fc.value);
+                    }
+                }
+            }
         }
         attrs.push(format!(r#"fill="{}""#, fill_color));
-
-        // fill-rule
-        if path_obj.fill_color.as_ref().map_or(false, |_| true) {
-            // Check Rule attribute via abbreviated approach
-        }
 
         // 描边
         let mut has_stroke = false;
@@ -409,6 +550,17 @@ impl Parser {
             if !sc.value.is_empty() {
                 attrs.push(format!(r#"stroke="{}""#, parse_color(&sc.value)));
                 has_stroke = true;
+            }
+        }
+        // 从 DrawParam 继承描边颜色
+        if !has_stroke {
+            if let Some(dp) = effective_dp {
+                if let Some(ref sc) = dp.stroke_color {
+                    if !sc.value.is_empty() {
+                        attrs.push(format!(r#"stroke="{}""#, parse_color(&sc.value)));
+                        has_stroke = true;
+                    }
+                }
             }
         }
         if !has_stroke && (path_obj.stroke || path_obj.line_width > 0.0) {
@@ -419,27 +571,68 @@ impl Parser {
         if has_stroke {
             let mut lw = path_obj.line_width;
             if lw == 0.0 {
-                lw = 1.0 / scale;
+                // 从 DrawParam 继承线宽
+                if let Some(dp) = effective_dp {
+                    if dp.line_width > 0.0 {
+                        lw = dp.line_width;
+                    }
+                }
+            }
+            if lw == 0.0 {
+                lw = 0.353; // OFD 默认线宽 0.353mm (1pt)
             } else if !ctm.is_empty() && ctm[0] > 0.0 {
                 lw *= ctm[0];
             }
             attrs.push(format!(r#"stroke-width="{:.4}""#, lw * scale));
 
-            if !path_obj.join.is_empty() {
-                attrs.push(format!(r#"stroke-linejoin="{}""#, path_obj.join.to_lowercase()));
+            // Join/Cap: 对象属性 > DrawParam
+            let join = if !path_obj.join.is_empty() {
+                path_obj.join.clone()
+            } else if let Some(dp) = effective_dp {
+                dp.join.clone()
+            } else {
+                String::new()
+            };
+            if !join.is_empty() {
+                attrs.push(format!(r#"stroke-linejoin="{}""#, join.to_lowercase()));
             }
-            if !path_obj.cap.is_empty() {
-                attrs.push(format!(r#"stroke-linecap="{}""#, path_obj.cap.to_lowercase()));
+            let cap = if !path_obj.cap.is_empty() {
+                path_obj.cap.clone()
+            } else if let Some(dp) = effective_dp {
+                dp.cap.clone()
+            } else {
+                String::new()
+            };
+            if !cap.is_empty() {
+                attrs.push(format!(r#"stroke-linecap="{}""#, cap.to_lowercase()));
             }
         } else {
             attrs.push("stroke=\"none\"".to_string());
         }
 
         let path_elem = format!("<path {}/>", attrs.join(" "));
-        if defs_svg.is_empty() {
-            Some(path_elem)
+
+        // 用嵌套 <svg> 裁剪到 Boundary 范围，防止路径超出边界
+        let clip_x = bx * scale;
+        let clip_y = by * scale;
+        let clip_w = bw * scale;
+        let clip_h = bh * scale;
+
+        let inner = if defs_svg.is_empty() {
+            path_elem
         } else {
-            Some(format!("{}\n{}", defs_svg, path_elem))
+            format!("{}\n{}", defs_svg, path_elem)
+        };
+
+        if bw > 0.0 && bh > 0.0 {
+            Some(format!(
+                r#"<svg x="{:.4}" y="{:.4}" width="{:.4}" height="{:.4}" viewBox="{:.4} {:.4} {:.4} {:.4}" overflow="hidden">{}</svg>"#,
+                clip_x, clip_y, clip_w, clip_h,
+                clip_x, clip_y, clip_w, clip_h,
+                inner
+            ))
+        } else {
+            Some(inner)
         }
     }
 
@@ -459,6 +652,13 @@ impl Parser {
         };
         let data_url = format!("data:{};base64,{}", mime_type, BASE64.encode(&img_data));
 
+        // Alpha 透明度
+        let opacity_attr = if img.alpha > 0 && img.alpha < 255 {
+            format!(r#" opacity="{:.4}""#, img.alpha as f64 / 255.0)
+        } else {
+            String::new()
+        };
+
         // 处理 CTM 变换
         if !img.ctm.is_empty() {
             let ctm = parse_ctm(&img.ctm);
@@ -472,8 +672,8 @@ impl Parser {
                 let px = ix * scale;
                 let py = iy * scale;
                 return Some(format!(
-                    r#"<image href="{}" x="0" y="0" width="1" height="1" transform="matrix({:.6},{:.6},{:.6},{:.6},{:.6},{:.6})" preserveAspectRatio="none"/>"#,
-                    data_url, a, b, c, d, px + e, py + f
+                    r#"<image href="{}" x="0" y="0" width="1" height="1" transform="matrix({:.6},{:.6},{:.6},{:.6},{:.6},{:.6})" preserveAspectRatio="none"{}/>"#,
+                    data_url, a, b, c, d, px + e, py + f, opacity_attr
                 ));
             }
         }
@@ -485,29 +685,60 @@ impl Parser {
         let ph = ih * scale;
 
         Some(format!(
-            r#"<image href="{}" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="none"/>"#,
-            data_url, px, py, pw, ph
+            r#"<image href="{}" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="none"{}/>"#,
+            data_url, px, py, pw, ph, opacity_attr
         ))
     }
 
     /// 渲染文本对象为 SVG text 元素
-    fn render_text_svg(&self, text: &TextObject, scale: f64) -> (Vec<String>, Vec<TextOverlayItem>) {
+    fn render_text_svg(
+        &self,
+        text: &TextObject,
+        scale: f64,
+        layer_dp: &Option<DrawParam>,
+    ) -> (Vec<String>, Vec<TextOverlayItem>, Vec<HtmlTextItem>) {
         let mut results = Vec::new();
         let mut overlays = Vec::new();
+        let html_items = Vec::new();
 
-        let (bx, by, _, _) = parse_boundary(&text.boundary);
+        let (bx, by, _bw, _bh) = parse_boundary(&text.boundary);
         let font_id = &text.font;
         let font_size = text.size;
 
-        // 解析颜色
-        let fill_color = text.fill_color.as_ref()
+        // 解析对象级别的 DrawParam
+        let obj_dp = if !text.draw_param.is_empty() {
+            self.draw_params.get(&text.draw_param).cloned()
+        } else {
+            None
+        };
+        // 优先级: 对象属性 > 对象DrawParam > Layer DrawParam
+        let effective_dp = obj_dp.as_ref().or(layer_dp.as_ref());
+
+        // 解析颜色（优先级: 对象属性 > DrawParam > 默认黑色）
+        let fill_color = text
+            .fill_color
+            .as_ref()
             .filter(|c| !c.value.is_empty())
             .map(|c| parse_color(&c.value))
+            .or_else(|| {
+                effective_dp
+                    .and_then(|dp| dp.fill_color.as_ref())
+                    .filter(|c| !c.value.is_empty())
+                    .map(|c| parse_color(&c.value))
+            })
             .unwrap_or_else(|| "#000".to_string());
 
-        let stroke_color_str = text.stroke_color.as_ref()
+        let stroke_color_str = text
+            .stroke_color
+            .as_ref()
             .filter(|c| !c.value.is_empty())
-            .map(|c| parse_color(&c.value));
+            .map(|c| parse_color(&c.value))
+            .or_else(|| {
+                effective_dp
+                    .and_then(|dp| dp.stroke_color.as_ref())
+                    .filter(|c| !c.value.is_empty())
+                    .map(|c| parse_color(&c.value))
+            });
 
         let color = if text.stroke && !text.fill && stroke_color_str.is_some() {
             stroke_color_str.clone().unwrap()
@@ -522,29 +753,50 @@ impl Parser {
             Vec::new()
         };
 
-        // CTM 缩放
-        let _scale_x = if ctm.len() >= 4 && ctm[0].abs() > 0.001 { ctm[0].abs() } else { 1.0 };
-        let scale_y = if ctm.len() >= 4 && ctm[3].abs() > 0.001 { ctm[3].abs() } else { 1.0 };
+        let has_ctm = ctm.len() >= 4;
 
-        let h_scale = if text.h_scale > 0.0 { text.h_scale } else { 1.0 };
-        let char_space = text.size * h_scale; // default advance if no deltaX
+        let h_scale = if text.h_scale > 0.0 {
+            text.h_scale
+        } else {
+            1.0
+        };
 
-        let font_size_px = font_size * scale * scale_y;
+        // 当有 CTM 时，将 CTM 的缩放因子吸收到 font_size 中
+        // 避免出现超大 font-size（如 9000）+ 微小 CTM 缩放（如 0.0176）的情况
+        // 这种模式在 OFD 中很常见，浏览器对超大 font-size 渲染不佳
+        let ctm_scale_y = if has_ctm {
+            let sy = (ctm[2] * ctm[2] + ctm[3] * ctm[3]).sqrt();
+            if sy > 0.0001 { sy } else { 1.0 }
+        } else {
+            1.0
+        };
+        let ctm_scale_x = if has_ctm {
+            let sx = (ctm[0] * ctm[0] + ctm[1] * ctm[1]).sqrt();
+            if sx > 0.0001 { sx } else { 1.0 }
+        } else {
+            1.0
+        };
 
-        // 字体族：嵌入字体优先使用 OFD_Font_{id}（与前端 @font-face 注册名一致）
-        // 检测竖排字体（@前缀）
+        let effective_font_size = font_size * ctm_scale_y;
+        let char_space = font_size * h_scale;
+
+        let font_size_px = effective_font_size * scale;
+
+        // CTM 水平压缩比：当 CTM 的 X/Y 缩放不一致时（如 0.8 0 0 1），
+        // 需要对字形水平方向额外压缩，否则文字会变宽变粗
+        let ctm_h_ratio = if has_ctm && ctm_scale_y > 0.0001 {
+            ctm_scale_x / ctm_scale_y
+        } else {
+            1.0
+        };
+
+        // 字体族
         let mut is_vertical_font = false;
         let font_family = if let Some(font) = self.fonts.get(font_id) {
             let has_file = self.font_files.contains_key(font_id);
-            // 检测 FontName 或 FamilyName 是否以 @ 开头
             if font.font_name.starts_with('@') || font.family_name.starts_with('@') {
                 is_vertical_font = true;
             }
-            web_sys::console::log_1(&format!(
-                "[字体] TextObject font_id={}, font_name='{}', family='{}', has_embedded_file={}, vertical={}",
-                font_id, font.font_name, font.family_name, has_file, is_vertical_font
-            ).into());
-            // 构建 font-family 列表，去掉 @ 前缀
             let mut families = Vec::new();
             if has_file {
                 families.push(format!("'OFD_Font_{}'", font_id));
@@ -569,19 +821,87 @@ impl Parser {
             families.push(cjk_fallback_fonts().to_string());
             families.join(", ")
         } else {
-            web_sys::console::log_1(&format!(
-                "[字体] TextObject font_id={} NOT FOUND in fonts map (total fonts: {})",
-                font_id, self.fonts.len()
-            ).into());
             cjk_fallback_fonts().to_string()
         };
 
-        // 描边属性
+        // 描边属性（CTM 缩放影响描边线宽）
+        let ctm_stroke_scale = if has_ctm {
+            (ctm_scale_x * ctm_scale_y).sqrt()
+        } else {
+            1.0
+        };
         let line_width_px = if text.stroke && text.line_width > 0.0 {
-            text.line_width * scale * scale_y
+            text.line_width * ctm_stroke_scale * scale
         } else {
             0.0
         };
+
+        // Alpha 透明度
+        let opacity = if text.alpha > 0 && text.alpha < 255 {
+            text.alpha as f64 / 255.0
+        } else {
+            1.0
+        };
+        let opacity_attr = if opacity < 1.0 {
+            format!(r#" opacity="{:.4}""#, opacity)
+        } else {
+            String::new()
+        };
+
+        // 文字渲染策略：所有坐标和字号都预乘 scale 转为 px
+        // 有 CTM 时：缩放因子已吸收到 font_size_px，CTM 只保留旋转/剪切
+        // 无 CTM 时：直接输出绝对 px 坐标的 <text>
+        if has_ctm {
+            let a = ctm[0];
+            let b = ctm[1];
+            let c = ctm[2];
+            let d = ctm[3];
+            let e = if ctm.len() > 4 { ctm[4] } else { 0.0 };
+            let f = if ctm.len() > 5 { ctm[5] } else { 0.0 };
+            // 归一化 CTM：去掉缩放因子，只保留旋转/剪切
+            let na = a / ctm_scale_x;
+            let nb = b / ctm_scale_x;
+            let nc = c / ctm_scale_y;
+            let nd = d / ctm_scale_y;
+            // 平移部分 (bx+e, by+f) 从 mm 转为 px
+            results.push(format!(
+                r#"<g transform="matrix({:.6},{:.6},{:.6},{:.6},{:.2},{:.2})"{}>"#,
+                na, nb, nc, nd,
+                (bx + e) * scale,
+                (by + f) * scale,
+                opacity_attr
+            ));
+        } else if opacity < 1.0 {
+            // 无 CTM 但有透明度，用 <g> 包裹
+            results.push(format!(r#"<g{}>"#, opacity_attr));
+        }
+
+        // 构建 CGTransform 字形映射：字符索引 → GlyphID
+        let mut cg_glyph_map: std::collections::HashMap<usize, u16> = std::collections::HashMap::new();
+        if !text.cg_transform.is_empty() {
+            for cgt in &text.cg_transform {
+                if cgt.glyphs.is_empty() {
+                    continue;
+                }
+                let glyph_ids: Vec<u16> = cgt.glyphs.split_whitespace()
+                    .filter_map(|s| s.parse::<u16>().ok())
+                    .collect();
+                let code_pos = cgt.code_position as usize;
+                let code_count = if cgt.code_count > 0 { cgt.code_count as usize } else { 1 };
+                let glyph_count = if cgt.glyph_count > 0 { cgt.glyph_count as usize } else { glyph_ids.len() };
+                // 简单映射：每个 code position 对应一个 glyph
+                for gi in 0..glyph_count.min(glyph_ids.len()) {
+                    let char_idx = code_pos + gi.min(code_count.saturating_sub(1));
+                    cg_glyph_map.insert(char_idx, glyph_ids[gi]);
+                }
+            }
+            if !cg_glyph_map.is_empty() {
+                web_sys::console::log_1(&format!(
+                    "[CGTransform] TextObject id={}, mappings={:?}",
+                    text.id, cg_glyph_map
+                ).into());
+            }
+        }
 
         for tc in &text.text_code {
             let content = &tc.content;
@@ -593,151 +913,233 @@ impl Parser {
             let delta_x = parse_deltas(&tc.delta_x);
             let delta_y = parse_deltas(&tc.delta_y);
 
-            // 计算 TextCode 坐标
-            let (mut tc_x_mm, mut tc_y_mm) = (tc.x, tc.y);
-            if ctm.len() >= 4 {
-                let (a, b, c, d) = (ctm[0], ctm[1], ctm[2], ctm[3]);
-                tc_x_mm = a * tc.x + c * tc.y;
-                tc_y_mm = b * tc.x + d * tc.y;
+            if !delta_x.is_empty() || !delta_y.is_empty() {
+                let preview: String = content.chars().take(10).collect();
+                web_sys::console::log_1(
+                    &format!(
+                        "[TextCode] chars={}, deltaX_count={}, deltaY_count={}, X={}, Y={}, text='{}'",
+                        chars.len(),
+                        delta_x.len(),
+                        delta_y.len(),
+                        tc.x,
+                        tc.y,
+                        preview
+                    )
+                    .into(),
+                );
             }
 
-            let mut current_x_mm = tc_x_mm;
-            let mut current_y_mm = tc_y_mm;
+            // mm 空间累加位置（CTM 缩放已吸收，坐标需要同步缩放）
+            let mut current_x_mm = tc.x * ctm_scale_x;
+            let mut current_y_mm = tc.y * ctm_scale_y;
 
-            // seg_text: 用于 SVG 渲染和文本蒙层的原始 Unicode 字符
-            let mut seg_text: Vec<char> = Vec::new();
-            let mut seg_positions_x = Vec::new();
-            let mut seg_start_y_mm = current_y_mm;
+            for (i, ch) in chars.iter().enumerate() {
+                let is_space = *ch == ' ' || *ch == '\u{3000}' || *ch == '\u{00A0}';
 
-            let flush_segment = |seg_text: &mut Vec<char>,
-                                      seg_positions_x: &mut Vec<f64>, seg_start_y_mm: f64,
-                                      results: &mut Vec<String>, overlays: &mut Vec<TextOverlayItem>| {
-                if seg_text.is_empty() {
-                    return;
-                }
-
-                // 逐字符生成 SVG text
-                for (ci, ch) in seg_text.iter().enumerate() {
-                    let cpx = (bx + seg_positions_x[ci]) * scale;
-                    let cpy = (by + seg_start_y_mm) * scale;
-
-                    let mut weight_attr = String::new();
-                    if text.weight >= 700 {
-                        weight_attr = r#" font-weight="bold""#.to_string();
-                    }
-                    let mut italic_attr = String::new();
-                    if text.italic {
-                        italic_attr = r#" font-style="italic""#.to_string();
-                    }
+                if !is_space {
+                    // 所有坐标预乘 scale 转为 SVG 内部坐标
+                    let px_x = if has_ctm {
+                        current_x_mm * scale
+                    } else {
+                        (bx + current_x_mm) * scale
+                    };
+                    let px_y = if has_ctm {
+                        current_y_mm * scale
+                    } else {
+                        (by + current_y_mm) * scale
+                    };
 
                     let fill_attr = if text.fill {
                         format!(r#"fill="{}""#, color)
                     } else {
                         r#"fill="none""#.to_string()
                     };
-                    let mut stroke_attr = String::new();
-                    if text.stroke {
+                    let stroke_attr = if text.stroke {
                         let sc = stroke_color_str.as_deref().unwrap_or(&color);
-                        stroke_attr = format!(r#" stroke="{}" stroke-width="{:.4}""#, sc, line_width_px);
-                    } else if text.fill {
-                        // 对纯填充文字添加微量描边，使笔画更清晰（模拟 font embolden）
-                        let embolden_width = font_size_px * 0.02;
-                        stroke_attr = format!(r#" stroke="{}" stroke-width="{:.4}" paint-order="stroke""#, color, embolden_width);
-                    }
-
-                    let escaped = xml_escape(&ch.to_string());
-
-                    // 应用变换：HScale 水平缩放 和/或 竖排字体旋转
-                    let transform_attr = if is_vertical_font {
-                        // 竖排字体：每个字符绕自身中心顺时针旋转90°
-                        // 字符中心约在 (cpx + font_size_px*0.5, cpy - font_size_px*0.35)
-                        let cx = cpx + font_size_px * 0.5;
-                        let cy = cpy - font_size_px * 0.35;
-                        if h_scale < 1.0 - 0.001 || h_scale > 1.0 + 0.001 {
-                            format!(r#" transform="matrix({:.4},0,0,1,{:.2},0) rotate(90,{:.2},{:.2})""#,
-                                h_scale, cpx * (1.0 - h_scale), cx, cy)
+                        let lw = if line_width_px > 0.0 {
+                            line_width_px
                         } else {
-                            format!(r#" transform="rotate(90,{:.2},{:.2})""#, cx, cy)
-                        }
-                    } else if h_scale < 1.0 - 0.001 || h_scale > 1.0 + 0.001 {
-                        format!(r#" transform="matrix({:.4},0,0,1,{:.2},0)""#,
-                            h_scale, cpx * (1.0 - h_scale))
+                            // 默认描边宽度：0.2 内部像素，在 10x 下约 0.02 CSS 像素
+                            0.2
+                        };
+                        format!(r#" stroke="{}" stroke-width="{:.4}""#, sc, lw)
                     } else {
-                        String::new()
+                        String::new() // 不描边时不输出 stroke 属性，避免任何干扰
                     };
 
-                    let svg_text = format!(
-                        r#"<text x="{:.2}" y="{:.2}" font-size="{:.2}" font-family="{}"{} {}{}{}{}>{}</text>"#,
-                        cpx, cpy, font_size_px, font_family, transform_attr, fill_attr, weight_attr, italic_attr, stroke_attr, escaped
-                    );
-                    // 调试：输出前2个 text 元素
-                    if results.len() < 2 {
-                        web_sys::console::log_1(&format!("[SVG-TEXT] {}", svg_text).into());
+                    // 尝试文字转曲：从嵌入字体提取字形轮廓
+                    // 优先使用 CGTransform 的 GlyphID 映射，否则按 Unicode 查找
+                    // 仅当字体没有系统别名或有 CGTransform 映射时才使用 glyph path
+                    let has_system_font = self.fonts.get(font_id).map(|f| {
+                        !get_font_aliases(&f.font_name).is_empty()
+                            || !get_font_aliases(&f.family_name).is_empty()
+                    }).unwrap_or(false);
+
+                    let cg_glyph_id = cg_glyph_map.get(&i).copied();
+
+                    let glyph_path = if let Some(gid) = cg_glyph_id {
+                        // CGTransform 指定了 GlyphID，直接按 ID 提取（优先级最高）
+                        self.font_files.get(font_id)
+                            .and_then(|data| glyph_id_to_svg_path(data, gid))
+                    } else if has_system_font {
+                        None // 有系统字体且无 CGTransform，统一用 <text> 渲染
+                    } else {
+                        self.font_files.get(font_id)
+                            .and_then(|data| glyph_to_svg_path(data, *ch))
+                    };
+
+                    // 首个字符输出调试信息
+                    if i == 0 {
+                        let has_font_file = self.font_files.contains_key(font_id);
+                        let font_info = self.fonts.get(font_id).map(|f| format!("name='{}' family='{}'", f.font_name, f.family_name)).unwrap_or_default();
+                        web_sys::console::log_1(&format!(
+                            "[文字渲染] TextObject id={}, font_id={}, {}, has_font_file={}, glyph_path={}, cg_glyph_id={:?}, char='{}', font_size_px={:.2}",
+                            text.id, font_id, font_info, has_font_file, glyph_path.is_some(), cg_glyph_id, ch, font_size_px
+                        ).into());
                     }
-                    results.push(svg_text);
+
+                    if let Some((path_d, _advance)) = glyph_path {
+                        // 字体坐标系：units_per_em → 需要缩放到目标字号
+                        let units_per_em = self.font_files.get(font_id)
+                            .and_then(|data| ttf_parser::Face::parse(data, 0).ok())
+                            .map(|f| f.units_per_em() as f64)
+                            .unwrap_or(1000.0);
+                        let glyph_scale = font_size_px / units_per_em;
+
+                        // HScale 处理 + CTM 水平压缩比
+                        let sx = glyph_scale * h_scale * ctm_h_ratio;
+                        let sy = glyph_scale;
+
+                        // 字形路径的描边属性：stroke-width 需要转换到字形坐标空间
+                        // 因为 <path> 上的 scale(sx,sy) 变换会同时缩放 stroke-width，
+                        // 所以需要除以平均缩放因子来补偿，保持最终描边宽度正确
+                        let glyph_stroke_attr = if text.stroke {
+                            let sc = stroke_color_str.as_deref().unwrap_or(&color);
+                            let lw = if line_width_px > 0.0 {
+                                line_width_px
+                            } else {
+                                0.2
+                            };
+                            // 将像素空间的 stroke-width 转换到字形坐标空间
+                            let avg_scale = ((sx.abs() + sy.abs()) / 2.0).max(0.0001);
+                            let glyph_lw = lw / avg_scale;
+                            format!(r#" stroke="{}" stroke-width="{:.4}" stroke-linejoin="round""#, sc, glyph_lw)
+                        } else {
+                            String::new()
+                        };
+
+                        // transform: 平移到字符位置，缩放字形
+                        let transform = format!(
+                            r#"translate({:.4},{:.4}) scale({:.6},{:.6})"#,
+                            px_x, px_y, sx, sy
+                        );
+
+                        let svg_path = format!(
+                            r#"<path d="{}" {}{} transform="{}"/>"#,
+                            path_d.trim(), fill_attr, glyph_stroke_attr, transform
+                        );
+                        results.push(svg_path);
+                    } else {
+                        // 回退：使用 SVG <text> 元素
+                        // OFD 的 Size 是字身框高度，而 CSS/SVG font-size 是 em-box 大小
+                        // 中文字体的字形通常只占 em-box 的 ~90%，所以需要缩小 font-size
+                        // 以匹配 OFD 预期的视觉大小
+                        let text_font_size = font_size_px * 0.90;
+
+                        let mut weight_attr = String::new();
+                        if text.weight >= 700 {
+                            weight_attr = r#" font-weight="bold""#.to_string();
+                        }
+                        let mut italic_attr = String::new();
+                        if text.italic {
+                            italic_attr = r#" font-style="italic""#.to_string();
+                        }
+
+                        let escaped = xml_escape(&ch.to_string());
+
+                        let mut char_transforms = Vec::new();
+                        let combined_h_scale = h_scale * ctm_h_ratio;
+                        if combined_h_scale < 1.0 - 0.001 || combined_h_scale > 1.0 + 0.001 {
+                            char_transforms.push(format!(
+                                "matrix({:.4},0,0,1,{:.4},0)",
+                                combined_h_scale,
+                                px_x * (1.0 - combined_h_scale)
+                            ));
+                        }
+                        if is_vertical_font {
+                            let cx = px_x + text_font_size * 0.5;
+                            let cy = px_y - text_font_size * 0.35;
+                            char_transforms.push(format!("rotate(90,{:.4},{:.4})", cx, cy));
+                        }
+                        let char_transform_attr = if !char_transforms.is_empty() {
+                            format!(r#" transform="{}""#, char_transforms.join(" "))
+                        } else {
+                            String::new()
+                        };
+
+                        let svg_text = format!(
+                            r#"<text x="{:.4}" y="{:.4}" font-size="{:.4}" font-family="{}"{} {}{}{}{}>{}</text>"#,
+                            px_x, px_y, text_font_size, font_family,
+                            char_transform_attr, fill_attr, weight_attr, italic_attr, stroke_attr, escaped
+                        );
+                        results.push(svg_text);
+                    }
                 }
 
-                // 文本蒙层
-                if !seg_text.is_empty() {
-                    let txt: String = seg_text.iter().collect();
-                    let first_px = (bx + seg_positions_x[0]) * scale;
-                    let last_px = (bx + seg_positions_x[seg_positions_x.len() - 1]) * scale;
-                    let py = (by + seg_start_y_mm) * scale;
-                    let text_width = last_px - first_px + font_size_px * h_scale * 0.9;
+                // mm 空间累加（CTM 缩放已吸收到坐标中）
+                let dx = if i < delta_x.len() {
+                    delta_x[i] * ctm_scale_x
+                } else if i < chars.len() - 1 {
+                    char_space * ctm_scale_x
+                } else {
+                    0.0
+                };
+                let dy = if i < delta_y.len() { delta_y[i] * ctm_scale_y } else { 0.0 };
+                current_x_mm += dx;
+                current_y_mm += dy;
+            }
+
+            // 文本蒙层
+            if !chars.is_empty() {
+                let txt: String = chars.iter().filter(|c| **c != ' ' && **c != '\u{3000}' && **c != '\u{00A0}').collect();
+                if !txt.is_empty() {
+                    let first_x = tc.x;
+                    let first_y = tc.y;
+                    let text_w_local = current_x_mm - tc.x;
+                    let font_size_ol = font_size * scale;
+
+                    let (ox, oy) = if has_ctm {
+                        let a = ctm[0]; let b_v = ctm[1]; let c_v = ctm[2]; let d = ctm[3];
+                        let e = if ctm.len() > 4 { ctm[4] } else { 0.0 };
+                        let f_v = if ctm.len() > 5 { ctm[5] } else { 0.0 };
+                        ((a * first_x + c_v * first_y + e + bx) * scale,
+                         (b_v * first_x + d * first_y + f_v + by) * scale)
+                    } else {
+                        ((bx + first_x) * scale, (by + first_y) * scale)
+                    };
+
+                    let ow = if has_ctm {
+                        (ctm[0] * text_w_local).abs() * scale + font_size_ol * 0.9
+                    } else {
+                        text_w_local * scale + font_size_ol * 0.9
+                    };
+
                     overlays.push(TextOverlayItem {
                         text: txt,
-                        x: first_px,
-                        y: py - font_size_px * 0.85,
-                        width: text_width,
-                        height: font_size_px * 1.2,
+                        x: ox,
+                        y: oy - font_size_ol * 0.85,
+                        width: ow,
+                        height: font_size_ol * 1.2,
                     });
                 }
-
-                seg_text.clear();
-                seg_positions_x.clear();
-            };
-
-            for (i, ch) in chars.iter().enumerate() {
-                let is_space = *ch == ' ' || *ch == '\u{3000}' || *ch == '\u{00A0}';
-
-                if is_space {
-                    flush_segment(&mut seg_text, &mut seg_positions_x, seg_start_y_mm, &mut results, &mut overlays);
-                } else {
-                    if seg_text.is_empty() {
-                        seg_start_y_mm = current_y_mm;
-                    }
-                    seg_text.push(*ch);
-                    seg_positions_x.push(current_x_mm);
-                }
-
-                // 计算下一个字符位置
-                let mut dx = 0.0_f64;
-                let mut dy = 0.0_f64;
-
-                if i < delta_x.len() {
-                    dx = delta_x[i];
-                } else if i < chars.len() - 1 {
-                    dx = char_space;
-                }
-                if i < delta_y.len() {
-                    dy = delta_y[i];
-                }
-
-                if dx != 0.0 || dy != 0.0 {
-                    if ctm.len() >= 4 {
-                        let (a, b, c, d) = (ctm[0], ctm[1], ctm[2], ctm[3]);
-                        current_x_mm += a * dx + c * dy;
-                        current_y_mm += b * dx + d * dy;
-                    } else {
-                        current_x_mm += dx;
-                        current_y_mm += dy;
-                    }
-                }
             }
-            flush_segment(&mut seg_text, &mut seg_positions_x, seg_start_y_mm, &mut results, &mut overlays);
         }
 
-        (results, overlays)
+        if has_ctm || opacity < 1.0 {
+            results.push("</g>".to_string());
+        }
+
+        (results, overlays, html_items)
     }
 
     /// 渲染复合对象（CompositeObject）为 SVG
@@ -762,14 +1164,42 @@ impl Parser {
         };
 
         let (cx, cy, cw, ch) = parse_boundary(&comp.boundary);
-        // 计算从图元坐标到页面坐标的缩放
-        let sx = if unit.width > 0.0 { cw / unit.width } else { 1.0 };
-        let sy = if unit.height > 0.0 { ch / unit.height } else { 1.0 };
 
         let page_block = match &unit.content.page_block {
             Some(pb) => pb,
             None => return,
         };
+
+        // 计算子元素的实际包围盒，用于替代可能错误的 unit.width/height
+        let (actual_w, actual_h) = self.compute_composite_bbox(page_block, scale);
+
+        // 使用实际包围盒计算缩放，如果实际包围盒有效的话
+        let (unit_w, unit_h) = if actual_w > 0.1 && actual_h > 0.1 {
+            // 检查 unit 声明的宽高是否明显不合理（比如等于页面尺寸 210x297）
+            let declared_seems_wrong = (unit.width - page_w).abs() < 1.0 && (unit.height - page_h).abs() < 1.0;
+            let ratio_off = if unit.width > 0.0 && unit.height > 0.0 {
+                let r1 = cw / unit.width;
+                let r2 = ch / unit.height;
+                // 如果声明的宽高导致缩放比极小（<0.2），说明声明值可能有误
+                r1 < 0.2 || r2 < 0.2
+            } else {
+                true
+            };
+            if declared_seems_wrong || ratio_off {
+                web_sys::console::log_1(&format!(
+                    "[CompositeObject] 使用实际包围盒: declared={}x{}, actual={:.2}x{:.2}, boundary={}x{}",
+                    unit.width, unit.height, actual_w, actual_h, cw, ch
+                ).into());
+                (actual_w, actual_h)
+            } else {
+                (unit.width, unit.height)
+            }
+        } else {
+            (unit.width, unit.height)
+        };
+
+        let sx = if unit_w > 0.0 { cw / unit_w } else { 1.0 };
+        let sy = if unit_h > 0.0 { ch / unit_h } else { 1.0 };
 
         // 用 SVG <g> 包裹，应用位移和缩放
         svg_parts.push(format!(
@@ -790,7 +1220,7 @@ impl Parser {
                     }
                 }
                 LayerObject::TextObject(text) => {
-                    let (text_svgs, overlays) = self.render_text_svg(text, scale);
+                    let (text_svgs, overlays, _html_items) = self.render_text_svg(text, scale, &None);
                     svg_parts.extend(text_svgs);
                     text_overlay.extend(overlays);
                 }
@@ -803,8 +1233,96 @@ impl Parser {
         svg_parts.push("</g>".to_string());
     }
 
-    /// 加载页面注释图片为 SVG 元素
-    fn load_page_annot_svg(&mut self, svg_parts: &mut Vec<String>, scale: f64, page_index: usize) {
+    /// 计算复合图元内所有子元素的实际包围盒（mm 空间）
+    fn compute_composite_bbox(
+        &self,
+        page_block: &CompositePageBlock,
+        _scale: f64,
+    ) -> (f64, f64) {
+        let mut min_x = f64::MAX;
+        let mut min_y = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut max_y = f64::MIN;
+        let mut has_path = false;
+
+        // 优先使用 PathObject 的 Boundary 来确定实际内容区域
+        // PathObject 定义了实际的形状（椭圆、边框等），其 Boundary 最可靠
+        // TextObject 的 Boundary 在复合图元中经常被设为整个区域，不可靠
+        for obj in &page_block.objects {
+            let (boundary_str, is_path) = match obj {
+                LayerObject::PathObject(p) => (&p.boundary, true),
+                LayerObject::ImageObject(i) => (&i.boundary, false),
+                _ => continue,
+            };
+            if boundary_str.is_empty() {
+                continue;
+            }
+            let (bx, by, bw, bh) = parse_boundary(boundary_str);
+            if bw < 0.01 || bh < 0.01 {
+                continue;
+            }
+            if is_path {
+                has_path = true;
+            }
+            if bx < min_x {
+                min_x = bx;
+            }
+            if by < min_y {
+                min_y = by;
+            }
+            if bx + bw > max_x {
+                max_x = bx + bw;
+            }
+            if by + bh > max_y {
+                max_y = by + bh;
+            }
+        }
+
+        // 如果没有 PathObject，回退到所有元素（但排除明显过大的 TextObject）
+        if !has_path {
+            min_x = f64::MAX;
+            min_y = f64::MAX;
+            max_x = f64::MIN;
+            max_y = f64::MIN;
+            for obj in &page_block.objects {
+                let boundary_str = match obj {
+                    LayerObject::PathObject(p) => &p.boundary,
+                    LayerObject::ImageObject(i) => &i.boundary,
+                    LayerObject::TextObject(t) => &t.boundary,
+                    LayerObject::CompositeObject(c) => &c.boundary,
+                };
+                if boundary_str.is_empty() {
+                    continue;
+                }
+                let (bx, by, bw, bh) = parse_boundary(boundary_str);
+                if bw < 0.01 || bh < 0.01 {
+                    continue;
+                }
+                if bx < min_x {
+                    min_x = bx;
+                }
+                if by < min_y {
+                    min_y = by;
+                }
+                if bx + bw > max_x {
+                    max_x = bx + bw;
+                }
+                if by + bh > max_y {
+                    max_y = by + bh;
+                }
+            }
+        }
+
+        if min_x < max_x && min_y < max_y {
+            // 返回实际内容的宽高
+            (max_x - min_x.min(0.0), max_y - min_y.min(0.0))
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// 加载页面注释为 SVG 元素
+    fn load_page_annot_svg(&mut self, svg_parts: &mut Vec<String>, text_overlay: &mut Vec<TextOverlayItem>, scale: f64, page_index: usize, page_w: f64, page_h: f64) {
         let doc = match self.document.as_ref() {
             Some(d) => d.clone(),
             None => return,
@@ -891,27 +1409,54 @@ impl Parser {
             for annot in &page_annot.annots {
                 let (ax, ay, _, _) = parse_boundary(&annot.appearance.boundary);
 
+                // 用 <g> 包裹注释，偏移到注释位置
+                svg_parts.push(format!(
+                    r#"<g transform="translate({:.4},{:.4})">"#,
+                    ax * scale, ay * scale
+                ));
+
+                // 处理 PageBlock 内的对象
                 for block in &annot.appearance.page_blocks {
-                    for a_img in &block.image_objects {
-                        if let Some(img_data) = self.load_image_lazy(&a_img.resource_id) {
-                            let (ix, iy, iw, ih) = parse_boundary(&a_img.boundary);
-                            let mime_type = if img_data.len() > 2 && img_data[0] == 0xFF && img_data[1] == 0xD8 {
-                                "image/jpeg"
-                            } else {
-                                "image/png"
-                            };
-                            let data_url = format!("data:{};base64,{}", mime_type, BASE64.encode(&img_data));
-                            let px = (ax + ix) * scale;
-                            let py = (ay + iy) * scale;
-                            let pw = iw * scale;
-                            let ph = ih * scale;
-                            svg_parts.push(format!(
-                                r#"<image href="{}" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="none"/>"#,
-                                data_url, px, py, pw, ph
-                            ));
+                    for obj in &block.objects {
+                        match obj {
+                            crate::page::LayerObject::ImageObject(a_img) => {
+                                if let Some(s) = self.image_object_to_svg(a_img, scale) {
+                                    svg_parts.push(s);
+                                }
+                            }
+                            crate::page::LayerObject::PathObject(path_obj) => {
+                                if let Some(s) = self.path_object_to_svg(path_obj, scale, page_w, page_h) {
+                                    svg_parts.push(s);
+                                }
+                            }
+                            crate::page::LayerObject::TextObject(text_obj) => {
+                                let (text_svgs, overlays, _html) = self.render_text_svg(text_obj, scale, &None);
+                                svg_parts.extend(text_svgs);
+                                text_overlay.extend(overlays);
+                            }
+                            crate::page::LayerObject::CompositeObject(_) => {}
                         }
                     }
                 }
+
+                // 处理直接嵌在 Appearance 下的对象（无 PageBlock 包裹）
+                for text_obj in &annot.appearance.text_objects {
+                    let (text_svgs, overlays, _html) = self.render_text_svg(text_obj, scale, &None);
+                    svg_parts.extend(text_svgs);
+                    text_overlay.extend(overlays);
+                }
+                for path_obj in &annot.appearance.path_objects {
+                    if let Some(s) = self.path_object_to_svg(path_obj, scale, page_w, page_h) {
+                        svg_parts.push(s);
+                    }
+                }
+                for a_img in &annot.appearance.image_objects {
+                    if let Some(s) = self.image_object_to_svg(a_img, scale) {
+                        svg_parts.push(s);
+                    }
+                }
+
+                svg_parts.push("</g>".to_string());
             }
         }
     }

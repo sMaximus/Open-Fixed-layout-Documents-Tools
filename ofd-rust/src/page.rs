@@ -134,6 +134,10 @@ pub struct TextObject {
     pub line_width: f64,
     #[serde(rename = "@CTM", default)]
     pub ctm: String,
+    #[serde(rename = "@DrawParam", default)]
+    pub draw_param: String,
+    #[serde(rename = "@Alpha", default = "default_alpha")]
+    pub alpha: i32,
     #[serde(rename = "FillColor", default)]
     pub fill_color: Option<Color>,
     #[serde(rename = "StrokeColor", default)]
@@ -158,6 +162,8 @@ impl Default for TextObject {
             fill: true,
             line_width: 0.353,
             ctm: String::new(),
+            draw_param: String::new(),
+            alpha: 255,
             fill_color: None,
             stroke_color: None,
             text_code: Vec::new(),
@@ -168,6 +174,7 @@ impl Default for TextObject {
 
 fn default_true() -> bool { true }
 fn default_line_width() -> f64 { 0.353 }
+fn default_alpha() -> i32 { 255 }
 
 /// 文本内容
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -212,10 +219,12 @@ pub struct PathObject {
     pub join: String,
     #[serde(rename = "@Cap", default)]
     pub cap: String,
-    #[serde(rename = "@Stroke", default)]
+    #[serde(rename = "@Stroke", default = "default_true")]
     pub stroke: bool,
     #[serde(rename = "@Fill", default)]
     pub fill: bool,
+    #[serde(rename = "@DrawParam", default)]
+    pub draw_param: String,
     #[serde(rename = "FillColor", default)]
     pub fill_color: Option<ColorOrShd>,
     #[serde(rename = "StrokeColor", default)]
@@ -235,6 +244,8 @@ pub struct ImageObject {
     pub resource_id: String,
     #[serde(rename = "@CTM", default)]
     pub ctm: String,
+    #[serde(rename = "@Alpha", default = "default_alpha")]
+    pub alpha: i32,
 }
 
 /// 颜色
@@ -306,6 +317,38 @@ pub struct Res {
     pub multi_medias: Option<MultiMedias>,
     #[serde(rename = "CompositeGraphicUnits", default)]
     pub composite_graphic_units: Option<CompositeGraphicUnits>,
+    /// DrawParam 直接作为 Res 的子元素（无 DrawParams 包装）
+    #[serde(rename = "DrawParam", default)]
+    pub draw_params: Vec<DrawParam>,
+    /// DrawParams 包装元素（部分 OFD 文件使用）
+    #[serde(rename = "DrawParams", default)]
+    pub draw_params_wrapped: Option<DrawParamsWrapper>,
+}
+
+/// DrawParams 包装元素
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct DrawParamsWrapper {
+    #[serde(rename = "DrawParam", default)]
+    pub draw_param: Vec<DrawParam>,
+}
+
+/// 绘制参数（定义默认描边/填充样式）
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct DrawParam {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "@Relative", default)]
+    pub relative: String,
+    #[serde(rename = "@LineWidth", default)]
+    pub line_width: f64,
+    #[serde(rename = "@Join", default)]
+    pub join: String,
+    #[serde(rename = "@Cap", default)]
+    pub cap: String,
+    #[serde(rename = "FillColor", default)]
+    pub fill_color: Option<Color>,
+    #[serde(rename = "StrokeColor", default)]
+    pub stroke_color: Option<Color>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -494,6 +537,13 @@ pub struct AnnotAppearance {
     pub boundary: String,
     #[serde(rename = "PageBlock", default)]
     pub page_blocks: Vec<AnnotPageBlock>,
+    /// 直接嵌在 Appearance 下的对象（无 PageBlock 包裹）
+    #[serde(rename = "TextObject", default)]
+    pub text_objects: Vec<TextObject>,
+    #[serde(rename = "PathObject", default)]
+    pub path_objects: Vec<PathObject>,
+    #[serde(rename = "ImageObject", default)]
+    pub image_objects: Vec<ImageObject>,
 }
 
 /// 注释页面块
@@ -501,8 +551,8 @@ pub struct AnnotAppearance {
 pub struct AnnotPageBlock {
     #[serde(rename = "@ID", default)]
     pub id: String,
-    #[serde(rename = "ImageObject", default)]
-    pub image_objects: Vec<ImageObject>,
+    #[serde(rename = "$value", default)]
+    pub objects: Vec<LayerObject>,
 }
 
 /// 印章数据 (Seal.xml)

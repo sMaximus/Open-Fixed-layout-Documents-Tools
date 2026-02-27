@@ -59,10 +59,23 @@ function scrollToPage(index) {
 async function loadOFDFonts() {
   try {
     const fonts = parser.get_fonts();
-    console.log("[字体] get_fonts 返回:", fonts);
-    if (!fonts || fonts.length === 0) return;
+    console.log("[字体] get_fonts 返回:", JSON.stringify(fonts, null, 2));
+    if (!fonts || fonts.length === 0) {
+      console.warn("[字体] 没有字体信息");
+      return;
+    }
+
+    // 打印每个字体的关键字段
+    for (const f of fonts) {
+      console.log(
+        `[字体] id=${f.id}, hasFile=${f.hasFile}, dataUrl存在=${!!f.dataUrl}, dataUrl长度=${f.dataUrl ? f.dataUrl.length : 0}`,
+      );
+    }
+
     const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataUrl);
-    console.log(`[字体] 嵌入字体数量: ${embeddedFonts.length}`);
+    console.log(
+      `[字体] 嵌入字体数量: ${embeddedFonts.length} / ${fonts.length}`,
+    );
 
     // 清理旧的字体样式
     let styleEl = document.getElementById("ofd-font-styles");
@@ -84,7 +97,7 @@ async function loadOFDFonts() {
         document.fonts.add(fontFace);
         loadedFonts.set(fontName, fontFace);
         console.log(
-          `[字体] 已加载: ${fontName} (${font.fontName}/${font.familyName})`,
+          `[字体] 已加载: ${fontName} (${font.fontName}/${font.familyName}), status=${fontFace.status}`,
         );
       } catch (err) {
         console.warn(`字体加载失败: ${fontName}`, err);
@@ -94,11 +107,16 @@ async function loadOFDFonts() {
     if (cssText) {
       styleEl.textContent = cssText;
       document.head.appendChild(styleEl);
+      console.log("[字体] @font-face CSS 已注入到 head");
     }
 
     // 等待所有字体就绪
     await document.fonts.ready;
     console.log(`[字体] 所有字体就绪, 已加载 ${loadedFonts.size} 个`);
+    // 列出所有已注册的字体
+    for (const f of document.fonts) {
+      console.log(`[字体] document.fonts: ${f.family} status=${f.status}`);
+    }
   } catch (err) {
     console.warn("加载字体出错:", err);
   }
@@ -185,13 +203,15 @@ function createPageContainer(index) {
   container.className = "page-container";
   container.dataset.pageIndex = index;
 
+  // 用 devicePixelRatio 对齐物理像素，避免亚像素模糊
+  const dpr = window.devicePixelRatio || 1;
   let pxWidth, pxHeight;
   if (allPagesData[index]) {
-    pxWidth = allPagesData[index].width * scale;
-    pxHeight = allPagesData[index].height * scale;
+    pxWidth = Math.round(allPagesData[index].width * scale * dpr) / dpr;
+    pxHeight = Math.round(allPagesData[index].height * scale * dpr) / dpr;
   } else {
-    pxWidth = 210 * scale;
-    pxHeight = 297 * scale;
+    pxWidth = Math.round(210 * scale * dpr) / dpr;
+    pxHeight = Math.round(297 * scale * dpr) / dpr;
   }
 
   container.style.cssText = `
@@ -227,8 +247,9 @@ async function renderPageContent(pageIndex) {
     return;
   }
 
-  const pxWidth = page.width * scale;
-  const pxHeight = page.height * scale;
+  const dpr = window.devicePixelRatio || 1;
+  const pxWidth = Math.round(page.width * scale * dpr) / dpr;
+  const pxHeight = Math.round(page.height * scale * dpr) / dpr;
 
   container.innerHTML = "";
   container.style.background = "#fff";
@@ -263,12 +284,15 @@ async function renderPageContent(pageIndex) {
       console.log(
         `[SVG] 页面${pageIndex + 1}: paths=${paths}, images=${images}, texts=${texts}`,
       );
-      // 调试：输出前几个 text 元素的 font-family
+      console.log(
+        `[SVG尺寸调试] 容器: ${pxWidth}x${pxHeight}, SVG属性: width=${svgEl.getAttribute("width")} height=${svgEl.getAttribute("height")}, SVG实际: ${svgEl.getBoundingClientRect().width}x${svgEl.getBoundingClientRect().height}`,
+      );
+      // 调试：输出前几个 text 元素的完整属性
       const textEls = svgEl.querySelectorAll("text");
-      for (let i = 0; i < Math.min(3, textEls.length); i++) {
+      for (let i = 0; i < Math.min(5, textEls.length); i++) {
         const t = textEls[i];
         console.log(
-          `[SVG] text[${i}]: font-family="${t.getAttribute("font-family")}", content="${t.textContent}"`,
+          `[SVG文字调试] text[${i}]: font-size="${t.getAttribute("font-size")}", data-mm-size="${t.getAttribute("data-mm-size")}", stroke="${t.getAttribute("stroke")}", stroke-width="${t.getAttribute("stroke-width")}", fill="${t.getAttribute("fill")}", content="${t.textContent}", parent=<${t.parentElement.tagName} transform="${t.parentElement.getAttribute("transform")}">`,
         );
       }
     }
@@ -276,18 +300,23 @@ async function renderPageContent(pageIndex) {
 
   // 文本蒙层（用于浏览器搜索 Ctrl+F）
   if (page.textOverlay && page.textOverlay.length > 0) {
+    const hiDpi = page.hiDpi || 1;
     const textLayer = document.createElement("div");
     textLayer.className = "text-overlay";
     for (const item of page.textOverlay) {
       const span = document.createElement("span");
       span.textContent = item.text;
+      const ox = item.x / hiDpi;
+      const oy = item.y / hiDpi;
+      const ow = item.width / hiDpi;
+      const oh = item.height / hiDpi;
       span.style.cssText = `
         position: absolute;
-        left: ${item.x}px; top: ${item.y}px;
-        width: ${item.width}px; height: ${item.height}px;
-        font-size: ${item.height * 0.8}px;
+        left: ${ox}px; top: ${oy}px;
+        width: ${ow}px; height: ${oh}px;
+        font-size: ${oh * 0.8}px;
         color: transparent; white-space: nowrap; overflow: hidden;
-        line-height: ${item.height}px;
+        line-height: ${oh}px;
         pointer-events: auto; user-select: text; -webkit-user-select: text;
       `;
       textLayer.appendChild(span);

@@ -122,6 +122,14 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+  shape-rendering: geometricPrecision;
+}
+.svg-layer svg image {
+  image-rendering: optimizeQuality;
+  image-rendering: smooth;
 }
 .text-overlay {
   position: absolute;

@@ -791,7 +791,7 @@ impl Parser {
 
 
 /// 检测字体MIME类型
-fn detect_font_mime(data: &[u8]) -> &'static str {
+pub fn detect_font_mime(data: &[u8]) -> &'static str {
     if data.len() > 4 {
         match (data[0], data[1], data[2], data[3]) {
             (0x00, 0x01, _, _) => "font/ttf",
@@ -909,7 +909,7 @@ impl<'a> PathScanner<'a> {
 
 
 /// 转换OFD路径命令为Canvas命令JSON
-pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, offset_y: f64, ctm: &[f64], page_width: f64, page_height: f64) -> String {
+pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, offset_y: f64, ctm: &[f64], _page_width: f64, _page_height: f64) -> String {
     let mut commands: Vec<serde_json::Value> = Vec::new();
 
     let transform_point = |x: f64, y: f64| -> (f64, f64) {
@@ -922,22 +922,13 @@ pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, 
         }
     };
 
-    let tolerance = 1.0;
-    let is_on_boundary = |x1: f64, y1: f64, x2: f64, y2: f64| -> bool {
-        if x1 <= tolerance && x2 <= tolerance { return true; }
-        if y1 <= tolerance && y2 <= tolerance { return true; }
-        if page_width > 0.0 && x1 >= page_width - tolerance && x2 >= page_width - tolerance { return true; }
-        if page_height > 0.0 && y1 >= page_height - tolerance && y2 >= page_height - tolerance { return true; }
-        false
-    };
-
     let mut scanner = PathScanner::new(data);
     let mut current_cmd: u8 = 0;
-    let mut start_x = 0.0;
-    let mut start_y = 0.0;
-    let mut current_x = 0.0;
-    let mut current_y = 0.0;
-    let mut has_start = false;
+    let mut _start_x = 0.0;
+    let mut _start_y = 0.0;
+    let mut _current_x = 0.0;
+    let mut _current_y = 0.0;
+    let mut _has_start = false;
 
     while scanner.has_more() {
         if let Some(cmd) = scanner.peek_command() {
@@ -950,11 +941,11 @@ pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, 
                 if let (Some(x), Some(y)) = (scanner.next_float(), scanner.next_float()) {
                     let (tx, ty) = transform_point(x, y);
                     commands.push(serde_json::json!({"cmd": "M", "x": tx, "y": ty}));
-                    start_x = tx;
-                    start_y = ty;
-                    current_x = tx;
-                    current_y = ty;
-                    has_start = true;
+                    _start_x = tx;
+                    _start_y = ty;
+                    _current_x = tx;
+                    _current_y = ty;
+                    _has_start = true;
                     if current_cmd == b'M' || current_cmd == b'm' {
                         current_cmd = b'L';
                     }
@@ -964,8 +955,8 @@ pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, 
                 if let (Some(x), Some(y)) = (scanner.next_float(), scanner.next_float()) {
                     let (tx, ty) = transform_point(x, y);
                     commands.push(serde_json::json!({"cmd": "L", "x": tx, "y": ty}));
-                    current_x = tx;
-                    current_y = ty;
+                    _current_x = tx;
+                    _current_y = ty;
                 }
             }
             b'B' | b'b' => {
@@ -983,8 +974,8 @@ pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, 
                         "x2": tx2, "y2": ty2,
                         "x": tx3, "y": ty3
                     }));
-                    current_x = tx3;
-                    current_y = ty3;
+                    _current_x = tx3;
+                    _current_y = ty3;
                 }
             }
             b'Q' | b'q' => {
@@ -999,18 +990,14 @@ pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, 
                         "x1": tx1, "y1": ty1,
                         "x": tx2, "y": ty2
                     }));
-                    current_x = tx2;
-                    current_y = ty2;
+                    _current_x = tx2;
+                    _current_y = ty2;
                 }
             }
             b'C' | b'c' | b'Z' | b'z' => {
-                if has_start && is_on_boundary(current_x, current_y, start_x, start_y) {
-                    // 闭合线段在边界上，忽略
-                } else {
-                    commands.push(serde_json::json!({"cmd": "Z"}));
-                }
+                commands.push(serde_json::json!({"cmd": "Z"}));
                 current_cmd = 0;
-                has_start = false;
+                _has_start = false;
             }
             b'A' | b'a' => {
                 for _ in 0..7 {
