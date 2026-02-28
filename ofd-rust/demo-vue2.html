@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OFD Viewer Vue2 Demo</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #f3f4f6;
+      }
+      #app {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      .toolbar {
+        height: 48px;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #111827;
+        color: #f9fafb;
+        box-sizing: border-box;
+      }
+      .toolbar input[type="file"] {
+        color: #f9fafb;
+      }
+      .status {
+        margin-left: auto;
+        color: #d1d5db;
+        font-size: 13px;
+      }
+      .viewer-host {
+        flex: 1;
+        min-height: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="toolbar">
+        <span>Vue2 OFD Demo</span>
+        <input
+          type="file"
+          accept=".ofd"
+          :disabled="busy"
+          @change="onFileChange"
+        />
+        <span class="status">{{ status }}</span>
+      </div>
+      <div ref="viewer" class="viewer-host"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.min.js"></script>
+    <script src="./dist/ofd-viewer.umd.js"></script>
+    <script type="module">
+      import initWasm, { OFDParser } from "./pkg/ofd_rust.js";
+
+      new Vue({
+        el: "#app",
+        data() {
+          return {
+            status: "Initializing...",
+            busy: false,
+            viewer: null,
+          };
+        },
+        async mounted() {
+          this.viewer = new OFDViewerLib.OFDViewer({
+            container: this.$refs.viewer,
+            onStatus: (msg) => {
+              this.status = msg;
+            },
+            onError: (err) => {
+              this.status = "Error: " + (err && err.message ? err.message : String(err));
+              console.error(err);
+            },
+          });
+
+          await this.viewer.init(initWasm, OFDParser);
+          this.status = "Ready";
+        },
+        methods: {
+          async onFileChange(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file || !this.viewer) return;
+            this.busy = true;
+            try {
+              await this.viewer.loadFile(file);
+            } finally {
+              this.busy = false;
+              event.target.value = "";
+            }
+          },
+        },
+      });
+    </script>
+  </body>
+</html>

@@ -160,7 +160,7 @@ impl Default for TextObject {
             italic: false,
             stroke: false,
             fill: true,
-            line_width: 0.353,
+            line_width: 0.265,
             ctm: String::new(),
             draw_param: String::new(),
             alpha: 255,
@@ -173,7 +173,7 @@ impl Default for TextObject {
 }
 
 fn default_true() -> bool { true }
-fn default_line_width() -> f64 { 0.353 }
+fn default_line_width() -> f64 { 0.265 }
 fn default_alpha() -> i32 { 255 }
 
 /// 文本内容
@@ -223,6 +223,8 @@ pub struct PathObject {
     pub stroke: bool,
     #[serde(rename = "@Fill", default)]
     pub fill: bool,
+    #[serde(rename = "@Rule", default)]
+    pub rule: String,
     #[serde(rename = "@DrawParam", default)]
     pub draw_param: String,
     #[serde(rename = "FillColor", default)]

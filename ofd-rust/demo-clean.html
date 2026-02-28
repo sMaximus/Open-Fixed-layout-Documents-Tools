@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OFD Viewer Clean Demo</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #f3f4f6;
+      }
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        background: #111827;
+        color: #f9fafb;
+      }
+      .bar input[type="file"] {
+        color: #f9fafb;
+      }
+      .status {
+        margin-left: auto;
+        font-size: 13px;
+        color: #d1d5db;
+      }
+      #viewer {
+        height: calc(100vh - 44px);
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <span>OFD Viewer (Clean Demo)</span>
+      <input id="fileInput" type="file" accept=".ofd" />
+      <span id="status" class="status">Initializing...</span>
+    </div>
+    <div id="viewer"></div>
+
+    <script src="./dist/ofd-viewer.umd.js"></script>
+    <script type="module">
+      import initWasm, { OFDParser } from "./pkg/ofd_rust.js";
+
+      const statusEl = document.getElementById("status");
+      const fileInput = document.getElementById("fileInput");
+      const viewerEl = document.getElementById("viewer");
+
+      const viewer = new OFDViewerLib.OFDViewer({
+        container: viewerEl,
+        onStatus: (msg) => {
+          statusEl.textContent = msg;
+        },
+        onError: (err) => {
+          statusEl.textContent = "Error: " + (err?.message || String(err));
+          console.error(err);
+        },
+      });
+
+      await viewer.init(initWasm, OFDParser);
+      statusEl.textContent = "Ready";
+
+      fileInput.addEventListener("change", async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        await viewer.loadFile(file);
+      });
+    </script>
+  </body>
+</html>

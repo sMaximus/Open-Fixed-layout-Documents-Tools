@@ -989,23 +989,21 @@ func (p *Parser) extractRenderData(result *PageRenderResult, page *Page, scale f
 		debug.TextDebug = append(debug.TextDebug, fmt.Sprintf("layer[%d]: texts=%d, paths=%d, images=%d", 
 			layerIdx, len(layer.TextObjects), len(layer.PathObjects), len(layer.ImageObjects)))
 
-		// 提取图片
-		for _, img := range layer.ImageObjects {
-			debug.RequestedIDs = append(debug.RequestedIDs, img.ResourceID)
-			if _, ok := p.images[img.ResourceID]; !ok {
-				debug.MissingIDs = append(debug.MissingIDs, img.ResourceID)
+		// Render objects in ID order to preserve z-order (e.g., strikethrough paths).
+		for _, obj := range orderedLayerObjects(&layer) {
+			switch obj.objType {
+			case layerObjectImage:
+				img := obj.image
+				debug.RequestedIDs = append(debug.RequestedIDs, img.ResourceID)
+				if _, ok := p.images[img.ResourceID]; !ok {
+					debug.MissingIDs = append(debug.MissingIDs, img.ResourceID)
+				}
+				p.extractImage(result, img, scale)
+			case layerObjectPath:
+				p.extractPath(result, obj.path, scale, result.Width, result.Height)
+			case layerObjectText:
+				p.extractText(result, obj.text, scale, debug)
 			}
-			p.extractImage(result, &img, scale)
-		}
-
-		// 提取路径
-		for _, pathObj := range layer.PathObjects {
-			p.extractPath(result, &pathObj, scale, result.Width, result.Height)
-		}
-
-		// 提取文本
-		for _, text := range layer.TextObjects {
-			p.extractText(result, &text, scale, debug)
 		}
 	}
 
@@ -1073,18 +1071,20 @@ func (p *Parser) renderTemplateLayers(result *PageRenderResult, page *Page, scal
 		debug.TextDebug = append(debug.TextDebug, fmt.Sprintf("template %s: %d layers", tplRef.TemplateID, len(tplLayers)))
 
 		for _, layer := range tplLayers {
-			for _, img := range layer.ImageObjects {
-				debug.RequestedIDs = append(debug.RequestedIDs, img.ResourceID)
-				if _, ok := p.images[img.ResourceID]; !ok {
-					debug.MissingIDs = append(debug.MissingIDs, img.ResourceID)
+			for _, obj := range orderedLayerObjects(&layer) {
+				switch obj.objType {
+				case layerObjectImage:
+					img := obj.image
+					debug.RequestedIDs = append(debug.RequestedIDs, img.ResourceID)
+					if _, ok := p.images[img.ResourceID]; !ok {
+						debug.MissingIDs = append(debug.MissingIDs, img.ResourceID)
+					}
+					p.extractImage(result, img, scale)
+				case layerObjectPath:
+					p.extractPath(result, obj.path, scale, result.Width, result.Height)
+				case layerObjectText:
+					p.extractText(result, obj.text, scale, debug)
 				}
-				p.extractImage(result, &img, scale)
-			}
-			for _, pathObj := range layer.PathObjects {
-				p.extractPath(result, &pathObj, scale, result.Width, result.Height)
-			}
-			for _, text := range layer.TextObjects {
-				p.extractText(result, &text, scale, debug)
 			}
 		}
 	}

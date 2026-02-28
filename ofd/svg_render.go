@@ -100,27 +100,28 @@ func (p *Parser) RenderPageSVG(pageIndex int) *PageRenderResult {
 	}
 
 	for _, layer := range layers {
-		for _, pathObj := range layer.PathObjects {
-			s := p.pathObjectToSVG(&pathObj, scale, width, height)
-			if s != "" {
-				svgParts = append(svgParts, s)
-			}
-		}
-		for _, img := range layer.ImageObjects {
-			s := p.imageObjectToSVG(&img, scale, debug)
-			if s != "" {
-				svgParts = append(svgParts, s)
-			}
-		}
-		for _, text := range layer.TextObjects {
-			textImgs, textOvl := p.renderTextObject(&text, scale, debug)
-			for _, ti := range textImgs {
-				s := textRenderResultToSVG(ti)
+		for _, obj := range orderedLayerObjects(&layer) {
+			switch obj.objType {
+			case layerObjectPath:
+				s := p.pathObjectToSVG(obj.path, scale, width, height)
 				if s != "" {
 					svgParts = append(svgParts, s)
 				}
+			case layerObjectImage:
+				s := p.imageObjectToSVG(obj.image, scale, debug)
+				if s != "" {
+					svgParts = append(svgParts, s)
+				}
+			case layerObjectText:
+				textImgs, textOvl := p.renderTextObject(obj.text, scale, debug)
+				for _, ti := range textImgs {
+					s := textRenderResultToSVG(ti)
+					if s != "" {
+						svgParts = append(svgParts, s)
+					}
+				}
+				textOverlay = append(textOverlay, textOvl...)
 			}
-			textOverlay = append(textOverlay, textOvl...)
 		}
 	}
 
@@ -264,27 +265,28 @@ func (p *Parser) renderTemplateSVG(svgParts *[]string, textOverlay *[]TextOverla
 		}
 
 		for _, layer := range tplLayers {
-			for _, pathObj := range layer.PathObjects {
-				s := p.pathObjectToSVG(&pathObj, scale, pageW, pageH)
-				if s != "" {
-					*svgParts = append(*svgParts, s)
-				}
-			}
-			for _, img := range layer.ImageObjects {
-				s := p.imageObjectToSVG(&img, scale, debug)
-				if s != "" {
-					*svgParts = append(*svgParts, s)
-				}
-			}
-			for _, text := range layer.TextObjects {
-				textImgs, textOvl := p.renderTextObject(&text, scale, debug)
-				for _, ti := range textImgs {
-					s := textRenderResultToSVG(ti)
+			for _, obj := range orderedLayerObjects(&layer) {
+				switch obj.objType {
+				case layerObjectPath:
+					s := p.pathObjectToSVG(obj.path, scale, pageW, pageH)
 					if s != "" {
 						*svgParts = append(*svgParts, s)
 					}
+				case layerObjectImage:
+					s := p.imageObjectToSVG(obj.image, scale, debug)
+					if s != "" {
+						*svgParts = append(*svgParts, s)
+					}
+				case layerObjectText:
+					textImgs, textOvl := p.renderTextObject(obj.text, scale, debug)
+					for _, ti := range textImgs {
+						s := textRenderResultToSVG(ti)
+						if s != "" {
+							*svgParts = append(*svgParts, s)
+						}
+					}
+					*textOverlay = append(*textOverlay, textOvl...)
 				}
-				*textOverlay = append(*textOverlay, textOvl...)
 			}
 		}
 	}

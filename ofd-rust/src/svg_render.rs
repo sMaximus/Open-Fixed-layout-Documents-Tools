@@ -117,10 +117,16 @@ pub struct HtmlTextItem {
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static SVG_GRADIENT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static SVG_PATTERN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn next_gradient_id() -> String {
     let id = SVG_GRADIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("grad_{}", id)
+}
+
+fn next_pattern_id() -> String {
+    let id = SVG_PATTERN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("pat_{}", id)
 }
 
 /// 获取中文字体名对应的系统英文别名
@@ -257,40 +263,45 @@ impl Parser {
         ).into());
 
         for (li, layer) in layers.iter().enumerate() {
-            let paths: Vec<_> = layer.path_objects().collect();
-            let imgs: Vec<_> = layer.image_objects().collect();
-            let txts: Vec<_> = layer.text_objects().collect();
-            let composites: Vec<_> = layer.composite_objects().collect();
+            let path_count = layer.path_objects().count();
+            let img_count = layer.image_objects().count();
+            let text_count = layer.text_objects().count();
+            let composite_count = layer.composite_objects().count();
             web_sys::console::log_1(&format!(
-                "[SVG渲染] layer[{}]: paths={}, images={}, texts={}, composites={}",
-                li, paths.len(), imgs.len(), txts.len(), composites.len()
+                "[SVG] layer[{}]: paths={}, images={}, texts={}, composites={}",
+                li, path_count, img_count, text_count, composite_count
             ).into());
 
-            // 解析 Layer 级别的 DrawParam
+            // Resolve layer-level DrawParam
             let layer_dp = if !layer.draw_param.is_empty() {
                 self.draw_params.get(&layer.draw_param).cloned()
             } else {
                 None
             };
 
-            for path_obj in paths {
-                if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, width, height, &layer_dp) {
-                    svg_parts.push(s);
+            // Keep original object order to preserve z-order (e.g. strikethrough paths).
+            for obj in &layer.objects {
+                match obj {
+                    LayerObject::PathObject(path_obj) => {
+                        if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, width, height, &layer_dp) {
+                            svg_parts.push(s);
+                        }
+                    }
+                    LayerObject::ImageObject(img) => {
+                        if let Some(s) = self.image_object_to_svg(img, scale) {
+                            svg_parts.push(s);
+                        }
+                    }
+                    LayerObject::TextObject(text) => {
+                        let (text_svgs, overlays, html_items) = self.render_text_svg(text, scale, &layer_dp);
+                        svg_parts.extend(text_svgs);
+                        text_overlay.extend(overlays);
+                        html_texts.extend(html_items);
+                    }
+                    LayerObject::CompositeObject(comp) => {
+                        self.render_composite_object_svg(&mut svg_parts, &mut text_overlay, comp, scale, width, height);
+                    }
                 }
-            }
-            for img in imgs {
-                if let Some(s) = self.image_object_to_svg(img, scale) {
-                    svg_parts.push(s);
-                }
-            }
-            for text in txts {
-                let (text_svgs, overlays, html_items) = self.render_text_svg(text, scale, &layer_dp);
-                svg_parts.extend(text_svgs);
-                text_overlay.extend(overlays);
-                html_texts.extend(html_items);
-            }
-            for comp in composites {
-                self.render_composite_object_svg(&mut svg_parts, &mut text_overlay, comp, scale, width, height);
             }
         }
 
@@ -382,39 +393,300 @@ impl Parser {
 
             let tpl_layers = self.get_page_layers(&tpl_page);
             for layer in &tpl_layers {
-                // 解析模板 Layer 级别的 DrawParam
+                // Resolve template layer DrawParam
                 let layer_dp = if !layer.draw_param.is_empty() {
                     self.draw_params.get(&layer.draw_param).cloned()
                 } else {
                     None
                 };
 
-                for path_obj in layer.path_objects() {
-                    if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, &layer_dp) {
-                        svg_parts.push(s);
+                // Keep original object order to preserve z-order (e.g. strikethrough paths).
+                for obj in &layer.objects {
+                    match obj {
+                        LayerObject::PathObject(path_obj) => {
+                            if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, &layer_dp) {
+                                svg_parts.push(s);
+                            }
+                        }
+                        LayerObject::ImageObject(img) => {
+                            if let Some(s) = self.image_object_to_svg(img, scale) {
+                                svg_parts.push(s);
+                            }
+                        }
+                        LayerObject::TextObject(text) => {
+                            let (text_svgs, overlays, _html_items) = self.render_text_svg(text, scale, &layer_dp);
+                            svg_parts.extend(text_svgs);
+                            text_overlay.extend(overlays);
+                        }
+                        LayerObject::CompositeObject(_) => {}
                     }
-                }
-                for img in layer.image_objects() {
-                    if let Some(s) = self.image_object_to_svg(img, scale) {
-                        svg_parts.push(s);
-                    }
-                }
-                for text in layer.text_objects() {
-                    let (text_svgs, overlays, _html_items) = self.render_text_svg(text, scale, &layer_dp);
-                    svg_parts.extend(text_svgs);
-                    text_overlay.extend(overlays);
                 }
             }
         }
     }
 
     /// 将 PathObject 转换为 SVG path 元素
-    fn path_object_to_svg(&self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64) -> Option<String> {
+    fn path_object_to_svg(&mut self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64) -> Option<String> {
         self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, &None)
     }
 
+    fn pattern_cell_path_to_svg(&self, path_obj: &PathObject, scale: f64) -> Option<String> {
+        if path_obj.abbreviated_data.is_empty() {
+            return None;
+        }
+
+        let (bx, by, _, _) = parse_boundary(&path_obj.boundary);
+        let ctm = if !path_obj.ctm.is_empty() {
+            parse_ctm(&path_obj.ctm)
+        } else {
+            Vec::new()
+        };
+        let cmd_json = convert_ofd_path_to_canvas(
+            &path_obj.abbreviated_data,
+            scale,
+            bx,
+            by,
+            &ctm,
+            0.0,
+            0.0,
+        );
+        let cmds: Vec<serde_json::Value> = match serde_json::from_str(&cmd_json) {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        let mut d = String::new();
+        for c in &cmds {
+            let cmd_type = c.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+            match cmd_type {
+                "M" => {
+                    let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let _ = write!(d, "M{:.4},{:.4} ", x, y);
+                }
+                "L" => {
+                    let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let _ = write!(d, "L{:.4},{:.4} ", x, y);
+                }
+                "C" => {
+                    let x1 = c.get("x1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y1 = c.get("y1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let x2 = c.get("x2").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y2 = c.get("y2").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let _ = write!(
+                        d,
+                        "C{:.4},{:.4} {:.4},{:.4} {:.4},{:.4} ",
+                        x1, y1, x2, y2, x, y
+                    );
+                }
+                "Q" => {
+                    let x1 = c.get("x1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y1 = c.get("y1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let _ = write!(d, "Q{:.4},{:.4} {:.4},{:.4} ", x1, y1, x, y);
+                }
+                "Z" => d.push_str("Z "),
+                _ => {}
+            }
+        }
+        let path_d = d.trim();
+        if path_d.is_empty() {
+            return None;
+        }
+
+        let fill_color = path_obj
+            .fill_color
+            .as_ref()
+            .and_then(|fc| {
+                if !fc.value.is_empty() {
+                    Some(parse_color(&fc.value))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                if path_obj.fill {
+                    "#000".to_string()
+                } else {
+                    "none".to_string()
+                }
+            });
+
+        let mut attrs = vec![
+            format!(r#"d="{}""#, path_d),
+            format!(r#"fill="{}""#, fill_color),
+        ];
+        if path_obj.rule.eq_ignore_ascii_case("Even-Odd") {
+            attrs.push(r#"fill-rule="evenodd""#.to_string());
+        }
+
+        let mut has_stroke = false;
+        if let Some(ref sc) = path_obj.stroke_color {
+            if !sc.value.is_empty() {
+                attrs.push(format!(r#"stroke="{}""#, parse_color(&sc.value)));
+                has_stroke = true;
+            }
+        }
+        if !has_stroke && (path_obj.stroke || path_obj.line_width > 0.0) {
+            attrs.push("stroke=\"#000\"".to_string());
+            has_stroke = true;
+        }
+        if has_stroke {
+            let lw = if path_obj.line_width > 0.0 {
+                path_obj.line_width
+            } else {
+                0.353
+            };
+            attrs.push(format!(r#"stroke-width="{:.4}""#, lw * scale));
+            if !path_obj.join.is_empty() {
+                attrs.push(format!(
+                    r#"stroke-linejoin="{}""#,
+                    path_obj.join.to_lowercase()
+                ));
+            }
+            if !path_obj.cap.is_empty() {
+                attrs.push(format!(
+                    r#"stroke-linecap="{}""#,
+                    path_obj.cap.to_lowercase()
+                ));
+            }
+        } else {
+            attrs.push("stroke=\"none\"".to_string());
+        }
+
+        Some(format!("<path {}/>", attrs.join(" ")))
+    }
+
+    fn build_pattern_fill_defs(
+        &mut self,
+        pattern: &Pattern,
+        scale: f64,
+        pattern_id: &str,
+    ) -> Option<String> {
+        let step_x_mm = if pattern.x_step > 0.0 {
+            pattern.x_step
+        } else {
+            pattern.width
+        };
+        let step_y_mm = if pattern.y_step > 0.0 {
+            pattern.y_step
+        } else {
+            pattern.height
+        };
+        if step_x_mm <= 0.0 || step_y_mm <= 0.0 {
+            return None;
+        }
+
+        let p_ctm = if !pattern.ctm.is_empty() {
+            parse_ctm(&pattern.ctm)
+        } else {
+            Vec::new()
+        };
+        let (a, b, c, d, e, f) = if p_ctm.len() >= 6 {
+            (p_ctm[0], p_ctm[1], p_ctm[2], p_ctm[3], p_ctm[4], p_ctm[5])
+        } else if p_ctm.len() >= 4 {
+            (p_ctm[0], p_ctm[1], p_ctm[2], p_ctm[3], 0.0, 0.0)
+        } else {
+            (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        };
+
+        let pattern_w = step_x_mm * scale;
+        let pattern_h = step_y_mm * scale;
+        if pattern_w <= 0.0 || pattern_h <= 0.0 {
+            return None;
+        }
+
+        let mut cell_parts: Vec<String> = Vec::new();
+
+        for img in &pattern.cell_content.image_objects {
+            let img_bytes = match self.load_image_lazy(&img.resource_id) {
+                Some(v) => v,
+                None => continue,
+            };
+            if img_bytes.is_empty() {
+                continue;
+            }
+
+            let mime_type = if img_bytes.len() > 2 && img_bytes[0] == 0xFF && img_bytes[1] == 0xD8 {
+                "image/jpeg"
+            } else {
+                "image/png"
+            };
+            let data_url = format!("data:{};base64,{}", mime_type, BASE64.encode(&img_bytes));
+
+            let (mut ix, mut iy, mut iw, mut ih) = parse_boundary(&img.boundary);
+            if !img.ctm.is_empty() {
+                let ictm = parse_ctm(&img.ctm);
+                if ictm.len() >= 4 {
+                    iw = ictm[0].abs();
+                    ih = ictm[3].abs();
+                }
+                if ictm.len() >= 6 {
+                    ix += ictm[4];
+                    iy += ictm[5];
+                }
+            }
+            if iw <= 0.0 || ih <= 0.0 {
+                continue;
+            }
+
+            let opacity_attr = if img.alpha > 0 && img.alpha < 255 {
+                format!(r#" opacity="{:.4}""#, img.alpha as f64 / 255.0)
+            } else {
+                String::new()
+            };
+
+            cell_parts.push(format!(
+                r#"<image href="{}" x="{:.4}" y="{:.4}" width="{:.4}" height="{:.4}" preserveAspectRatio="none"{}/>"#,
+                data_url,
+                ix * scale,
+                iy * scale,
+                iw * scale,
+                ih * scale,
+                opacity_attr
+            ));
+        }
+
+        for path_obj in &pattern.cell_content.path_objects {
+            if let Some(s) = self.pattern_cell_path_to_svg(path_obj, scale) {
+                cell_parts.push(s);
+            }
+        }
+
+        if cell_parts.is_empty() {
+            return None;
+        }
+
+        let pattern_transform_attr = if p_ctm.len() >= 4 {
+            format!(
+                r#" patternTransform="matrix({:.6},{:.6},{:.6},{:.6},{:.6},{:.6})""#,
+                a,
+                b,
+                c,
+                d,
+                e * scale,
+                f * scale
+            )
+        } else {
+            String::new()
+        };
+
+        Some(format!(
+            r#"<defs><pattern id="{}" patternUnits="userSpaceOnUse" x="0" y="0" width="{:.4}" height="{:.4}"{}>{}</pattern></defs>"#,
+            pattern_id,
+            pattern_w,
+            pattern_h,
+            pattern_transform_attr,
+            cell_parts.join("\n")
+        ))
+    }
+
     /// 将 PathObject 转换为 SVG path 元素（支持 DrawParam 继承）
-    fn path_object_to_svg_with_dp(&self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64, layer_dp: &Option<DrawParam>) -> Option<String> {
+    fn path_object_to_svg_with_dp(&mut self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64, layer_dp: &Option<DrawParam>) -> Option<String> {
         if path_obj.abbreviated_data.is_empty() {
             return None;
         }
@@ -446,6 +718,22 @@ impl Parser {
         let cmds: Vec<serde_json::Value> = match serde_json::from_str(&cmd_json) {
             Ok(c) => c,
             Err(_) => return None,
+        };
+        let is_line_only_path = {
+            let mut has_line = false;
+            let mut ok = true;
+            for c in &cmds {
+                let cmd_type = c.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+                match cmd_type {
+                    "M" | "Z" => {}
+                    "L" => has_line = true,
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            ok && has_line
         };
 
         let mut d = String::new();
@@ -531,6 +819,12 @@ impl Parser {
                     grad_id, gx1, gy1, r1, stops
                 );
                 fill_color = format!("url(#{})", grad_id);
+            } else if let Some(ref pat) = fc.pattern {
+                let pat_id = next_pattern_id();
+                if let Some(pat_defs) = self.build_pattern_fill_defs(pat, scale, &pat_id) {
+                    defs_svg = pat_defs;
+                    fill_color = format!("url(#{})", pat_id);
+                }
             }
         } else if path_obj.fill {
             // 对象没有 FillColor 但 Fill=true，从 DrawParam 继承
@@ -543,6 +837,9 @@ impl Parser {
             }
         }
         attrs.push(format!(r#"fill="{}""#, fill_color));
+        if path_obj.rule.eq_ignore_ascii_case("Even-Odd") {
+            attrs.push(r#"fill-rule="evenodd""#.to_string());
+        }
 
         // 描边
         let mut has_stroke = false;
@@ -568,10 +865,11 @@ impl Parser {
             has_stroke = true;
         }
 
+        let mut stroke_width_px = 0.0_f64;
+        let mut thin_line_candidate = false;
         if has_stroke {
             let mut lw = path_obj.line_width;
             if lw == 0.0 {
-                // 从 DrawParam 继承线宽
                 if let Some(dp) = effective_dp {
                     if dp.line_width > 0.0 {
                         lw = dp.line_width;
@@ -579,12 +877,36 @@ impl Parser {
                 }
             }
             if lw == 0.0 {
-                lw = 0.353; // OFD 默认线宽 0.353mm (1pt)
+                // For LineWidth=0 paths, keep line decorations visible while avoiding
+                // overly bold glyph-like path strokes.
+                lw = if is_line_only_path { 0.353 } else { 0.265 };
             } else if !ctm.is_empty() && ctm[0] > 0.0 {
                 lw *= ctm[0];
             }
-            attrs.push(format!(r#"stroke-width="{:.4}""#, lw * scale));
+            let mut sw = lw * scale;
 
+            // Hairline decorations (e.g. strikethrough PathObject) can become invisible.
+            // Keep a minimum visible width only for thin, stroke-only line decorations.
+            let is_stroke_only = fill_color == "none";
+            let thin_boundary_mm = bw.min(bh);
+            let css_px_per_mm = 3.78_f64;
+            let thin_boundary_px = thin_boundary_mm * css_px_per_mm;
+            let declared_lw = path_obj.line_width;
+            let very_thin_declared =
+                (declared_lw > 0.0 && declared_lw <= 0.06) || (declared_lw == 0.0 && thin_boundary_px <= 0.6);
+            thin_line_candidate =
+                is_stroke_only && is_line_only_path && very_thin_declared && thin_boundary_px <= 1.5;
+            if thin_line_candidate {
+                let hi_dpi = (scale / css_px_per_mm).max(1.0);
+                let min_css_px = 1.0_f64;
+                let min_viewbox_px = min_css_px * hi_dpi;
+                if sw < min_viewbox_px {
+                    sw = min_viewbox_px;
+                }
+                attrs.push(r#"shape-rendering="crispEdges""#.to_string());
+            }
+            stroke_width_px = sw;
+            attrs.push(format!(r#"stroke-width="{:.4}""#, stroke_width_px));
             // Join/Cap: 对象属性 > DrawParam
             let join = if !path_obj.join.is_empty() {
                 path_obj.join.clone()
@@ -613,10 +935,19 @@ impl Parser {
         let path_elem = format!("<path {}/>", attrs.join(" "));
 
         // 用嵌套 <svg> 裁剪到 Boundary 范围，防止路径超出边界
-        let clip_x = bx * scale;
-        let clip_y = by * scale;
-        let clip_w = bw * scale;
-        let clip_h = bh * scale;
+        let mut clip_x = bx * scale;
+        let mut clip_y = by * scale;
+        let mut clip_w = bw * scale;
+        let mut clip_h = bh * scale;
+
+        // Expand clip box by stroke width to avoid clipping thin lines on boundary edges.
+        if thin_line_candidate && stroke_width_px > 0.0 {
+            let clip_pad = stroke_width_px * 0.6;
+            clip_x -= clip_pad;
+            clip_y -= clip_pad;
+            clip_w += clip_pad * 2.0;
+            clip_h += clip_pad * 2.0;
+        }
 
         let inner = if defs_svg.is_empty() {
             path_elem

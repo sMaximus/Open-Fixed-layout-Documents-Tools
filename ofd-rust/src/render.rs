@@ -246,24 +246,22 @@ impl Parser {
         }
 
         for layer in layers {
-            // 提取图片
-            for img in layer.image_objects() {
-                self.extract_image(result, img, scale);
-            }
-
-            // 提取路径
-            for path_obj in layer.path_objects() {
-                self.extract_path(result, path_obj, scale, result.width, result.height);
-            }
-
-            // 提取文本
-            for text in layer.text_objects() {
-                self.extract_text(result, text, scale);
-            }
-
-            // 提取复合对象
-            for comp in layer.composite_objects() {
-                self.extract_composite_object(result, comp, scale);
+            // Keep original object order to preserve z-order (e.g. text strikethrough paths).
+            for obj in &layer.objects {
+                match obj {
+                    LayerObject::ImageObject(img) => {
+                        self.extract_image(result, img, scale);
+                    }
+                    LayerObject::PathObject(path_obj) => {
+                        self.extract_path(result, path_obj, scale, result.width, result.height);
+                    }
+                    LayerObject::TextObject(text) => {
+                        self.extract_text(result, text, scale);
+                    }
+                    LayerObject::CompositeObject(comp) => {
+                        self.extract_composite_object(result, comp, scale);
+                    }
+                }
             }
         }
     }
