@@ -508,23 +508,22 @@ impl Parser {
             return None;
         }
 
-        let fill_color = path_obj
-            .fill_color
-            .as_ref()
-            .and_then(|fc| {
-                if !fc.value.is_empty() {
-                    Some(parse_color(&fc.value))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                if path_obj.fill {
-                    "#000".to_string()
-                } else {
-                    "none".to_string()
-                }
-            });
+        let fill_color = if let Some(ref fc) = path_obj.fill_color {
+            if fc.pattern.is_some() || fc.axial_shd.is_some() || fc.radial_shd.is_some() {
+                // Complex fill (Pattern/gradient) inside a nested pattern cell — skip (use "none")
+                "none".to_string()
+            } else if !fc.value.is_empty() {
+                parse_color(&fc.value)
+            } else if path_obj.fill {
+                "#000".to_string()
+            } else {
+                "none".to_string()
+            }
+        } else if path_obj.fill {
+            "#000".to_string()
+        } else {
+            "none".to_string()
+        };
 
         let mut attrs = vec![
             format!(r#"d="{}""#, path_d),
@@ -796,8 +795,18 @@ impl Parser {
         let mut defs_svg = String::new();
 
         if let Some(ref fc) = path_obj.fill_color {
-            if !fc.value.is_empty() {
-                fill_color = parse_color(&fc.value);
+            // 优先级: Pattern/渐变 > 纯色值
+            // 当 FillColor 同时有 Value 和 Pattern/渐变子元素时，子元素优先
+            if let Some(ref pat) = fc.pattern {
+                let pat_id = next_pattern_id();
+                if let Some(pat_defs) = self.build_pattern_fill_defs(pat, scale, &pat_id) {
+                    defs_svg = pat_defs;
+                    fill_color = format!("url(#{})", pat_id);
+                } else {
+                    // Pattern exists but failed to render (e.g. images not loaded)
+                    // Use transparent fill instead of Value fallback to avoid solid black rectangles
+                    fill_color = "none".to_string();
+                }
             } else if let Some(ref axial) = fc.axial_shd {
                 let grad = self.parse_axial_shd(axial, &ctm, scale);
                 let grad_id = next_gradient_id();
@@ -829,12 +838,8 @@ impl Parser {
                     grad_id, gx1, gy1, r1, stops
                 );
                 fill_color = format!("url(#{})", grad_id);
-            } else if let Some(ref pat) = fc.pattern {
-                let pat_id = next_pattern_id();
-                if let Some(pat_defs) = self.build_pattern_fill_defs(pat, scale, &pat_id) {
-                    defs_svg = pat_defs;
-                    fill_color = format!("url(#{})", pat_id);
-                }
+            } else if !fc.value.is_empty() {
+                fill_color = parse_color(&fc.value);
             }
         } else if path_obj.fill {
             // 对象没有 FillColor 但 Fill=true，从 DrawParam 继承
@@ -940,6 +945,51 @@ impl Parser {
             }
         } else {
             attrs.push("stroke=\"none\"".to_string());
+        }
+
+        // Alpha → opacity
+        if path_obj.alpha < 255 && path_obj.alpha >= 0 {
+            let opacity = path_obj.alpha as f64 / 255.0;
+            attrs.push(format!(r#"opacity="{:.4}""#, opacity));
+        }
+
+        // BlendMode → style="mix-blend-mode: ..."
+        if !path_obj.blend_mode.is_empty() {
+            let css_blend = match path_obj.blend_mode.to_lowercase().as_str() {
+                "darken" => "darken",
+                "multiply" => "multiply",
+                "lighten" => "lighten",
+                "screen" => "screen",
+                "overlay" => "overlay",
+                "color-dodge" | "colordodge" => "color-dodge",
+                "color-burn" | "colorburn" => "color-burn",
+                "hard-light" | "hardlight" => "hard-light",
+                "soft-light" | "softlight" => "soft-light",
+                "difference" => "difference",
+                "exclusion" => "exclusion",
+                "hue" => "hue",
+                "saturation" => "saturation",
+                "color" => "color",
+                "luminosity" => "luminosity",
+                _ => "normal",
+            };
+            if css_blend != "normal" {
+                attrs.push(format!(r#"style="mix-blend-mode: {}""#, css_blend));
+            }
+        }
+
+        // DashPattern → stroke-dasharray
+        if !path_obj.dash_pattern.is_empty() && has_stroke {
+            let dash_values: Vec<String> = path_obj.dash_pattern
+                .split_whitespace()
+                .map(|v| {
+                    let val: f64 = v.parse().unwrap_or(0.0);
+                    format!("{:.4}", val * scale)
+                })
+                .collect();
+            if !dash_values.is_empty() {
+                attrs.push(format!(r#"stroke-dasharray="{}""#, dash_values.join(" ")));
+            }
         }
 
         let path_elem = format!("<path {}/>", attrs.join(" "));

@@ -227,6 +227,12 @@ pub struct PathObject {
     pub rule: String,
     #[serde(rename = "@DrawParam", default)]
     pub draw_param: String,
+    #[serde(rename = "@Alpha", default = "default_alpha")]
+    pub alpha: i32,
+    #[serde(rename = "@BlendMode", default)]
+    pub blend_mode: String,
+    #[serde(rename = "@DashPattern", default)]
+    pub dash_pattern: String,
     #[serde(rename = "FillColor", default)]
     pub fill_color: Option<ColorOrShd>,
     #[serde(rename = "StrokeColor", default)]
