@@ -666,6 +666,12 @@ impl Parser {
             }
         }
 
+        // 渲染 Pattern 内的文本对象（水印文字）
+        for text_obj in &pattern.cell_content.text_objects {
+            let (text_svgs, _overlays, _html) = self.render_text_svg(text_obj, scale, &None);
+            cell_parts.extend(text_svgs);
+        }
+
         if cell_parts.is_empty() {
             return None;
         }
@@ -1326,8 +1332,10 @@ impl Parser {
 
             for (i, ch) in chars.iter().enumerate() {
                 let is_space = *ch == ' ' || *ch == '\u{3000}' || *ch == '\u{00A0}';
+                let cg_glyph_id = cg_glyph_map.get(&i).copied();
+                let should_render_char = !is_space || cg_glyph_id.is_some();
 
-                if !is_space {
+                if should_render_char {
                     // 所有坐标预乘 scale 转为 SVG 内部坐标
                     let px_x = if has_ctm {
                         current_x_mm * scale
@@ -1365,8 +1373,6 @@ impl Parser {
                         !get_font_aliases(&f.font_name).is_empty()
                             || !get_font_aliases(&f.family_name).is_empty()
                     }).unwrap_or(false);
-
-                    let cg_glyph_id = cg_glyph_map.get(&i).copied();
 
                     let glyph_path = if let Some(gid) = cg_glyph_id {
                         // CGTransform 指定了 GlyphID，直接按 ID 提取（优先级最高）
@@ -1430,7 +1436,7 @@ impl Parser {
                             path_d.trim(), fill_attr, glyph_stroke_attr, transform
                         );
                         results.push(svg_path);
-                    } else {
+                    } else if !is_space {
                         // 回退：使用 SVG <text> 元素
                         // OFD 的 Size 是字身框高度，而 CSS/SVG font-size 是 em-box 大小
                         // 中文字体的字形通常只占 em-box 的 ~90%，所以需要缩小 font-size
