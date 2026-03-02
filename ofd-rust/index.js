@@ -2,12 +2,63 @@ import init, { OFDParser } from "./pkg/ofd_rust.js";
 
 let parser = null;
 let currentPageCount = 0;
-const scale = 3.78;
+const BASE_SCALE = 3.78;
+let currentZoom = 1.0;
+const ZOOM_STEP = 0.25;
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 5.0;
 const loadedFonts = new Map();
 let allPagesData = [];
 const renderedPages = new Set();
 const INITIAL_PAGES = 3;
 const PRELOAD_THRESHOLD = 200;
+
+function getScale() {
+  return BASE_SCALE * currentZoom;
+}
+
+function updateZoomDisplay() {
+  const el = document.getElementById("zoomLevel");
+  if (el) el.textContent = Math.round(currentZoom * 100) + "%";
+}
+
+function applyZoomToPages() {
+  const sc = getScale();
+  const dpr = window.devicePixelRatio || 1;
+  for (let i = 0; i < allPagesData.length; i++) {
+    const container = document.getElementById(`page-${i}`);
+    if (!container) continue;
+    const page = allPagesData[i];
+    let pxW, pxH;
+    if (page) {
+      pxW = Math.round(page.width * sc * dpr) / dpr;
+      pxH = Math.round(page.height * sc * dpr) / dpr;
+    } else {
+      pxW = Math.round(210 * sc * dpr) / dpr;
+      pxH = Math.round(297 * sc * dpr) / dpr;
+    }
+    container.style.width = `${pxW}px`;
+    container.style.height = `${pxH}px`;
+  }
+}
+
+function setZoom(zoom) {
+  currentZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+  updateZoomDisplay();
+  applyZoomToPages();
+}
+
+function zoomIn() {
+  setZoom(currentZoom + ZOOM_STEP);
+}
+
+function zoomOut() {
+  setZoom(currentZoom - ZOOM_STEP);
+}
+
+function resetZoom() {
+  setZoom(1.0);
+}
 
 function updateStatus(msg) {
   document.getElementById("status").textContent = msg;
@@ -151,6 +202,7 @@ async function parseAndRender(file) {
     console.log(`[总耗时] ${(performance.now() - totalStart).toFixed(2)}ms`);
     updateStatus(`✅ 已加载 ${currentPageCount} 页`);
     document.getElementById("xmlBtn").style.display = "";
+    document.getElementById("zoomControls").style.display = "";
   } catch (err) {
     updateStatus("❌ " + err.message);
     viewer.innerHTML = `<div class="empty-state"><p>❌ 解析失败</p><p style="font-size:12px;">${err.message}</p></div>`;
@@ -207,11 +259,11 @@ function createPageContainer(index) {
   const dpr = window.devicePixelRatio || 1;
   let pxWidth, pxHeight;
   if (allPagesData[index]) {
-    pxWidth = Math.round(allPagesData[index].width * scale * dpr) / dpr;
-    pxHeight = Math.round(allPagesData[index].height * scale * dpr) / dpr;
+    pxWidth = Math.round(allPagesData[index].width * getScale() * dpr) / dpr;
+    pxHeight = Math.round(allPagesData[index].height * getScale() * dpr) / dpr;
   } else {
-    pxWidth = Math.round(210 * scale * dpr) / dpr;
-    pxHeight = Math.round(297 * scale * dpr) / dpr;
+    pxWidth = Math.round(210 * getScale() * dpr) / dpr;
+    pxHeight = Math.round(297 * getScale() * dpr) / dpr;
   }
 
   container.style.cssText = `
@@ -248,8 +300,8 @@ async function renderPageContent(pageIndex) {
   }
 
   const dpr = window.devicePixelRatio || 1;
-  const pxWidth = Math.round(page.width * scale * dpr) / dpr;
-  const pxHeight = Math.round(page.height * scale * dpr) / dpr;
+  const pxWidth = Math.round(page.width * getScale() * dpr) / dpr;
+  const pxHeight = Math.round(page.height * getScale() * dpr) / dpr;
 
   container.innerHTML = "";
   container.style.background = "#fff";
@@ -602,10 +654,29 @@ function highlightXml(xml) {
 
 window.showXmlModal = showXmlModal;
 window.hideXmlModal = hideXmlModal;
+window.zoomIn = zoomIn;
+window.zoomOut = zoomOut;
+window.resetZoom = resetZoom;
+window.setZoom = setZoom;
 
-// 按 Esc 关闭弹窗
+// 按 Esc 关闭弹窗，Ctrl+/- 缩放
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideXmlModal();
+  // Ctrl++ 或 Ctrl+= 放大
+  if ((e.ctrlKey || e.metaKey) && (e.key === "+" || e.key === "=")) {
+    e.preventDefault();
+    zoomIn();
+  }
+  // Ctrl+- 缩小
+  if ((e.ctrlKey || e.metaKey) && e.key === "-") {
+    e.preventDefault();
+    zoomOut();
+  }
+  // Ctrl+0 重置
+  if ((e.ctrlKey || e.metaKey) && e.key === "0") {
+    e.preventDefault();
+    resetZoom();
+  }
 });
 
 // 事件绑定

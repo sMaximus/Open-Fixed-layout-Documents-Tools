@@ -24,6 +24,30 @@
       >
         查看 XML
       </button>
+      <div class="zoom-controls" id="zoomControls" style="display: none">
+        <button
+          class="zoom-btn"
+          onclick="window.zoomOut()"
+          title="缩小 (Ctrl+-)"
+        >
+          −
+        </button>
+        <span class="zoom-level" id="zoomLevel">100%</span>
+        <button
+          class="zoom-btn"
+          onclick="window.zoomIn()"
+          title="放大 (Ctrl++)"
+        >
+          +
+        </button>
+        <button
+          class="zoom-btn zoom-reset"
+          onclick="window.resetZoom()"
+          title="重置缩放"
+        >
+          ↺
+        </button>
+      </div>
       <span class="status" id="status">⏳ 加载 WASM...</span>
     </div>
 

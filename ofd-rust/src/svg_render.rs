@@ -75,6 +75,9 @@ pub struct SVGRenderResult {
     pub page_index: usize,
     pub width: f64,
     pub height: f64,
+    /// 缩放比例（前端用于计算容器尺寸）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<f64>,
     /// 高清倍率，前端需要用此值缩放文本蒙层坐标
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hi_dpi: Option<f64>,
@@ -177,6 +180,12 @@ fn xml_escape(s: &str) -> String {
 impl Parser {
     /// 渲染页面为 SVG
     pub fn render_page_svg(&mut self, page_index: usize) -> SVGRenderResult {
+        self.render_page_svg_with_zoom(page_index, 1.0)
+    }
+
+    /// 渲染页面为 SVG（带缩放比例）
+    pub fn render_page_svg_with_zoom(&mut self, page_index: usize, zoom: f64) -> SVGRenderResult {
+        let zoom = if zoom <= 0.0 { 1.0 } else { zoom };
         let mut result = SVGRenderResult {
             page_index,
             ..Default::default()
@@ -322,6 +331,7 @@ impl Parser {
         );
 
         result.svg = Some(svg);
+        result.zoom = Some(zoom);
         result.hi_dpi = Some(hi_dpi);
         result.text_overlay = Some(text_overlay);
         if !html_texts.is_empty() {

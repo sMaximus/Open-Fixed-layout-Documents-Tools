@@ -87,6 +87,12 @@ impl OFDParser {
         serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
     }
 
+    /// 渲染页面为 SVG（带缩放比例）
+    pub fn render_page_svg_scaled(&mut self, index: usize, zoom: f64) -> JsValue {
+        let result = self.parser.render_page_svg_with_zoom(index, zoom);
+        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    }
+
     /// 获取字体信息
     pub fn get_fonts(&mut self) -> JsValue {
         let fonts = self.parser.get_fonts();

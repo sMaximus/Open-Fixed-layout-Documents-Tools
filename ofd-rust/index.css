@@ -41,6 +41,51 @@ body {
   font-size: 14px;
   margin-left: auto;
 }
+/* 缩放控件 */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+.zoom-btn {
+  background: #0f3460;
+  color: #ccc;
+  border: 1px solid #1a4a7a;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  line-height: 1;
+}
+.zoom-btn:hover {
+  background: #1a4a7a;
+  color: #fff;
+  border-color: #2a6aaa;
+}
+.zoom-btn:active {
+  background: #e94560;
+  border-color: #e94560;
+}
+.zoom-reset {
+  font-size: 16px;
+}
+.zoom-level {
+  color: #ccc;
+  font-size: 13px;
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  background: #0f3460;
+  padding: 4px 8px;
+  border-radius: 4px;
+  user-select: none;
+}
 .main-container {
   display: flex;
   height: calc(100vh - 60px);
