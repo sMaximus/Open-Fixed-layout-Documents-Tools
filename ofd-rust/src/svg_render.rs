@@ -679,14 +679,18 @@ impl Parser {
         }
 
         let pattern_transform_attr = if p_ctm.len() >= 4 {
+            // Pattern 的 CTM 平移部分需要加上 Pattern 的起始位置（bx, by）
+            // 因为 Pattern 的 CTM 是相对于页面坐标系的，而 Pattern 内容是相对于 bx, by 的
+            let tx = (bx + e) * scale;
+            let ty = (by + f) * scale;
             format!(
                 r#" patternTransform="matrix({:.6},{:.6},{:.6},{:.6},{:.6},{:.6})""#,
                 a,
                 b,
                 c,
                 d,
-                e * scale,
-                f * scale
+                tx,
+                ty
             )
         } else {
             String::new()
