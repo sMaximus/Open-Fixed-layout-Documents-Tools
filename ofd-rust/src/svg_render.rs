@@ -575,6 +575,8 @@ impl Parser {
         pattern: &Pattern,
         scale: f64,
         pattern_id: &str,
+        bx: f64,
+        by: f64,
     ) -> Option<String> {
         let step_x_mm = if pattern.x_step > 0.0 {
             pattern.x_step
@@ -805,7 +807,7 @@ impl Parser {
             // 当 FillColor 同时有 Value 和 Pattern/渐变子元素时，子元素优先
             if let Some(ref pat) = fc.pattern {
                 let pat_id = next_pattern_id();
-                if let Some(pat_defs) = self.build_pattern_fill_defs(pat, scale, &pat_id) {
+                if let Some(pat_defs) = self.build_pattern_fill_defs(pat, scale, &pat_id, bx, by) {
                     defs_svg = pat_defs;
                     fill_color = format!("url(#{})", pat_id);
                 } else {
@@ -1300,12 +1302,18 @@ impl Parser {
             }
         }
 
+        let use_cg_transform = !cg_glyph_map.is_empty();
+
         for tc in &text.text_code {
             let content = &tc.content;
-            if content.is_empty() {
+            if content.is_empty() && !use_cg_transform {
                 continue;
             }
             let chars: Vec<char> = content.chars().collect();
+            let char_count = chars.len();
+            if char_count == 0 {
+                continue;
+            }
 
             let delta_x = parse_deltas(&tc.delta_x);
             let delta_y = parse_deltas(&tc.delta_y);
@@ -1330,10 +1338,16 @@ impl Parser {
             let mut current_x_mm = tc.x * ctm_scale_x;
             let mut current_y_mm = tc.y * ctm_scale_y;
 
-            for (i, ch) in chars.iter().enumerate() {
-                let is_space = *ch == ' ' || *ch == '\u{3000}' || *ch == '\u{00A0}';
+            for i in 0..char_count {
+                let ch = chars[i];
+                let is_space = ch == ' ' || ch == '\u{3000}' || ch == '\u{00A0}';
                 let cg_glyph_id = cg_glyph_map.get(&i).copied();
-                let should_render_char = !is_space || cg_glyph_id.is_some();
+                let should_render_char = if use_cg_transform {
+                    // CGTransform 模式：有 glyph 映射就渲染，没有则按普通字符处理
+                    cg_glyph_id.is_some() || !is_space
+                } else {
+                    !is_space
+                };
 
                 if should_render_char {
                     // 所有坐标预乘 scale 转为 SVG 内部坐标
@@ -1378,11 +1392,13 @@ impl Parser {
                         // CGTransform 指定了 GlyphID，直接按 ID 提取（优先级最高）
                         self.font_files.get(font_id)
                             .and_then(|data| glyph_id_to_svg_path(data, gid))
+                    } else if use_cg_transform {
+                        None
                     } else if has_system_font {
                         None // 有系统字体且无 CGTransform，统一用 <text> 渲染
                     } else {
                         self.font_files.get(font_id)
-                            .and_then(|data| glyph_to_svg_path(data, *ch))
+                            .and_then(|data| glyph_to_svg_path(data, ch))
                     };
 
                     // 首个字符输出调试信息
@@ -1436,7 +1452,7 @@ impl Parser {
                             path_d.trim(), fill_attr, glyph_stroke_attr, transform
                         );
                         results.push(svg_path);
-                    } else if !is_space {
+                    } else if cg_glyph_id.is_none() && !is_space {
                         // 回退：使用 SVG <text> 元素
                         // OFD 的 Size 是字身框高度，而 CSS/SVG font-size 是 em-box 大小
                         // 中文字体的字形通常只占 em-box 的 ~90%，所以需要缩小 font-size
@@ -1486,7 +1502,7 @@ impl Parser {
                 // mm 空间累加（CTM 缩放已吸收到坐标中）
                 let dx = if i < delta_x.len() {
                     delta_x[i] * ctm_scale_x
-                } else if i < chars.len() - 1 {
+                } else if i + 1 < chars.len() {
                     char_space * ctm_scale_x
                 } else {
                     0.0
@@ -1805,6 +1821,11 @@ impl Parser {
 
             for annot in &page_annot.annots {
                 let (ax, ay, _, _) = parse_boundary(&annot.appearance.boundary);
+
+                web_sys::console::log_1(&format!(
+                    "[Annot] id={}, type='{}', subtype='{}', appearance_boundary='{}', ax={:.4}, ay={:.4}",
+                    annot.id, annot.annot_type, annot.subtype, annot.appearance.boundary, ax, ay
+                ).into());
 
                 // 用 <g> 包裹注释，偏移到注释位置
                 svg_parts.push(format!(
