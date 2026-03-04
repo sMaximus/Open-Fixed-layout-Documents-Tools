@@ -263,6 +263,9 @@ impl Parser {
         // 渲染模板层
         self.render_template_svg(&mut svg_parts, &mut text_overlay, &page, scale, width, height);
 
+        // 印章（含 ASN.1 提取图片）先渲染，确保后续文字层在其上方
+        self.load_stamps_svg(&mut svg_parts, &mut text_overlay, scale, page_index, width, height);
+
         // 获取页面层
         let layers = self.get_page_layers(&page);
 
@@ -316,9 +319,6 @@ impl Parser {
 
         // 注释
         self.load_page_annot_svg(&mut svg_parts, &mut text_overlay, scale, page_index, width, height);
-
-        // 印章
-        self.load_stamps_svg(&mut svg_parts, &mut text_overlay, scale, page_index, width, height);
 
         // SVG 不设固定 width/height，只用 viewBox + CSS 100% 填充容器
         // 这样避免 SVG 固有尺寸与容器尺寸不一致导致的二次缩放模糊
