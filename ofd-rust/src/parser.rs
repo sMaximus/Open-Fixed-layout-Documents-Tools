@@ -141,7 +141,7 @@ impl Parser {
                     
                     if let Some(ref doc) = self.document {
                         result.page_count = doc.pages.page.len();
-                        // 璋冭瘯杈撳嚭
+                        // 调试输出
                         web_sys::console::log_1(&format!(
                             "Document parsed: page_count={}, physical_box='{}'",
                             doc.pages.page.len(),
@@ -237,7 +237,7 @@ impl Parser {
         let lower = name.to_lowercase();
         lower.ends_with(".xml") || lower.ends_with(".ofd") || lower.ends_with(".txt")
     }
-    /// 绉婚櫎XML鍛藉悕绌洪棿鍓嶇紑
+    /// 移除 XML 命名空间前缀
     pub fn remove_namespace_prefix(xml_str: &str) -> String {
         let re1 = Regex::new(r"<(/?)ofd:").unwrap();
         let result = re1.replace_all(xml_str, "<$1");
@@ -245,13 +245,13 @@ impl Parser {
         let re2 = Regex::new(r#"\s+xmlns:[^=]+="[^"]*""#).unwrap();
         let result = re2.replace_all(&result, "").to_string();
 
-        // 淇濇姢 TextCode 涓殑鏂囨湰鍐呭涓嶈 quick_xml trim
-        // 灏?<TextCode ...>text</TextCode> 涓殑鏂囨湰绌烘牸鏇挎崲涓?\u{00A0}(NBSP)
-        // 杩欐牱 quick_xml 鐨?$text 涓嶄細 trim 鎺夊畠浠?
+        // 保护 TextCode 中的文本内容不被 quick_xml trim
+        // 将 <TextCode ...>text</TextCode> 中的文本空格替换为 \u{00A0}(NBSP)
+        // 这样 quick_xml 的 $text 不会 trim 掉它们
         Self::preserve_textcode_spaces(&result)
     }
 
-    /// 淇濇姢 TextCode 鍏冪礌涓殑鍓嶅/灏鹃儴绌烘牸
+    /// 保护 TextCode 元素中的前导/尾部空格
     fn preserve_textcode_spaces(xml_str: &str) -> String {
         let re = Regex::new(r"(?s)(<TextCode[^>]*>)(.*?)(</TextCode>)").unwrap();
         re.replace_all(xml_str, |caps: &regex::Captures| {
@@ -259,16 +259,16 @@ impl Parser {
             let text = &caps[2];
             let close_tag = &caps[3];
 
-            // 濡傛灉鏂囨湰涓寘鍚瓙鍏冪礌锛堝 CGTransform锛夛紝涓嶅鐞?
+            // 如果文本中包含子元素（如 CGTransform），不处理
             if text.contains('<') {
                 return format!("{}{}{}", open_tag, text, close_tag);
             }
 
-            // 灏嗗墠瀵煎拰灏鹃儴鐨勬櫘閫氱┖鏍兼浛鎹负 NBSP(\u{00A0})
+            // 将前导和尾部的普通空格替换为 NBSP(\u{00A0})
             let chars: Vec<char> = text.chars().collect();
             let mut result_chars = chars.clone();
 
-            // 鍓嶅绌烘牸
+            // 前导空格
             for i in 0..result_chars.len() {
                 if result_chars[i] == ' ' {
                     result_chars[i] = '\u{00A0}';
@@ -276,7 +276,7 @@ impl Parser {
                     break;
                 }
             }
-            // 灏鹃儴绌烘牸
+            // 尾部空格
             for i in (0..result_chars.len()).rev() {
                 if result_chars[i] == ' ' {
                     result_chars[i] = '\u{00A0}';
@@ -290,8 +290,8 @@ impl Parser {
         }).to_string()
     }
 
-    /// 鍚堝苟閲嶅鐨刋ML鍏冪礌锛堝澶氫釜 PublicRes銆丏ocumentRes锛?
-    /// quick-xml 鍙嶅簭鍒楀寲涓嶆敮鎸侀噸澶嶅悓鍚嶅厓绱狅紝鍘婚櫎閲嶅鍙繚鐣欑涓€涓?
+    /// 合并重复的 XML 元素（如多个 PublicRes、DocumentRes）
+    /// quick-xml 反序列化不支持重复同名元素，去除重复只保留第一个
     pub fn dedup_xml_elements(xml_str: &str) -> String {
         let mut result = xml_str.to_string();
         let tags = ["PublicRes", "DocumentRes"];
@@ -311,32 +311,32 @@ impl Parser {
         result
     }
 
-    /// 鑾峰彇鏂囦欢鍒楄〃
+    /// 获取文件列表
     pub fn get_files(&self) -> &[String] {
         &self.files
     }
 
-    /// 鑾峰彇鏂囨。淇℃伅
+    /// 获取文档信息
     pub fn get_doc_info(&self) -> Option<&DocInfo> {
         self.ofd.as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| &body.doc_info)
     }
 
-    /// 鑾峰彇椤垫暟
+    /// 获取页数
     pub fn get_page_count(&self) -> usize {
         self.document.as_ref()
             .map(|doc| doc.pages.page.len())
             .unwrap_or(0)
     }
 
-    /// 鑾峰彇椤甸潰鏂囦欢璺緞
+    /// 获取页面文件路径
     pub fn get_page_path(&self, index: usize) -> Option<String> {
         let doc = self.document.as_ref()?;
         let page_ref = doc.pages.page.get(index)?;
         let page_loc = page_ref.base_loc.trim_start_matches('/');
 
-        // 鑾峰彇鏂囨。鏍圭洰褰?
+        // 获取文档根目录
         let doc_base = self.ofd.as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| {
@@ -349,7 +349,7 @@ impl Parser {
             })
             .unwrap_or_default();
 
-        // 灏濊瘯澶氱璺緞缁勫悎
+        // 尝试多种路径组合
         let candidates = vec![
             format!("{}/{}", doc_base, page_loc),
             page_loc.to_string(),
@@ -365,7 +365,7 @@ impl Parser {
             }
         }
 
-        // 鎸夐〉闈㈢储寮曟煡鎵?
+        // 按页面索引查找
         let page_pattern = format!("page_{}/content.xml", index);
         for file in &self.files {
             let lower = file.to_lowercase();
@@ -377,7 +377,7 @@ impl Parser {
         Some(format!("{}/{}", doc_base, page_loc))
     }
 
-    /// 鑾峰彇椤甸潰灏哄
+    /// 获取页面尺寸
     pub fn get_page_size(&self, index: usize) -> (f64, f64) {
         let page_path = match self.get_page_path(index) {
             Some(p) => p,
@@ -408,13 +408,13 @@ impl Parser {
         (210.0, 297.0)
     }
 
-    /// 鍔犺浇璧勬簮
+    /// 加载资源
     pub fn load_resources(&mut self) {
         if !self.fonts.is_empty() {
             return;
         }
 
-        // 鑾峰彇鏂囨。鏍圭洰褰?
+        // 获取文档根目录
         let doc_base = self.ofd.as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| {
@@ -453,30 +453,30 @@ impl Parser {
                 .and_then(|p| p.to_str())
                 .unwrap_or("");
 
-            // 鍔犺浇瀛椾綋
+            // 加载字体
             if let Some(fonts) = &res.fonts {
                 for font in &fonts.font {
                     let mut font_clone = font.clone();
                     if !font.font_file.is_empty() {
                         font_clone.font_file = format!("{}/{}/{}", base_path, res.base_loc, font.font_file);
-                        // 棰勫姞杞藉瓧浣撴枃浠舵暟鎹紝鏍囪璇ュ瓧浣撴湁宓屽叆鏂囦欢
+                        // 预加载字体文件数据，标记该字体有嵌入文件
                         match self.read_file(&font_clone.font_file) {
                             Ok(font_data) if !font_data.is_empty() => {
                                 web_sys::console::log_1(&format!(
-                                    "[璧勬簮] 瀛椾綋鍔犺浇鎴愬姛: id={}, path='{}', size={}bytes",
+                                    "[资源] 字体加载成功: id={}, path='{}', size={}bytes",
                                     font.id, font_clone.font_file, font_data.len()
                                 ).into());
                                 self.font_files.insert(font.id.clone(), font_data);
                             }
                             Ok(_) => {
                                 web_sys::console::warn_1(&format!(
-                                    "[璧勬簮] 瀛椾綋鏂囦欢涓虹┖: id={}, path='{}'",
+                                    "[资源] 字体文件为空: id={}, path='{}'",
                                     font.id, font_clone.font_file
                                 ).into());
                             }
                             Err(e) => {
                                 web_sys::console::warn_1(&format!(
-                                    "[璧勬簮] 瀛椾綋鏂囦欢璇诲彇澶辫触: id={}, path='{}', err={}",
+                                    "[资源] 字体文件读取失败: id={}, path='{}', err={}",
                                     font.id, font_clone.font_file, e
                                 ).into());
                             }
@@ -486,7 +486,7 @@ impl Parser {
                 }
             }
 
-            // 鍔犺浇鍥剧墖璺緞
+            // 加载图片路径
             if let Some(medias) = &res.multi_medias {
                 for media in &medias.multi_media {
                     if media.media_type == "Image" {
@@ -496,18 +496,18 @@ impl Parser {
                 }
             }
 
-            // 鍔犺浇澶嶅悎鍥惧厓
+            // 加载复合图元
             if let Some(cgu) = &res.composite_graphic_units {
                 for unit in &cgu.units {
                     self.composite_units.insert(unit.id.clone(), unit.clone());
                 }
             }
 
-            // 鍔犺浇缁樺埗鍙傛暟锛圖rawParam 鐩存帴鍦?Res 涓嬶級
+            // 加载绘制参数（DrawParam 直接在 Res 下）
             for dp in &res.draw_params {
                 self.draw_params.insert(dp.id.clone(), dp.clone());
             }
-            // 鍔犺浇缁樺埗鍙傛暟锛圖rawParams 鍖呰鍏冪礌涓嬶級
+            // 加载绘制参数（DrawParams 包装元素下）
             if let Some(ref dps) = res.draw_params_wrapped {
                 for dp in &dps.draw_param {
                     self.draw_params.insert(dp.id.clone(), dp.clone());
@@ -515,7 +515,7 @@ impl Parser {
             }
         }
 
-        // 澶勭悊 DrawParam 鐨?Relative 缁ф壙
+        // 处理 DrawParam 的 Relative 继承
         let dp_ids: Vec<String> = self.draw_params.keys().cloned().collect();
         for id in dp_ids {
             let relative_id = self.draw_params.get(&id).map(|dp| dp.relative.clone()).unwrap_or_default();
@@ -543,26 +543,26 @@ impl Parser {
 
         let _ = doc_base;
 
-        // 璋冭瘯锛氳緭鍑哄凡鍔犺浇鐨勮祫婧愪俊鎭?
+        // 调试：输出已加载的资源信息
         web_sys::console::log_1(&format!(
-            "[璧勬簮] load_resources 瀹屾垚: fonts={}, font_files={}, images={}, composites={}, draw_params={}",
+            "[资源] load_resources 完成: fonts={}, font_files={}, images={}, composites={}, draw_params={}",
             self.fonts.len(), self.font_files.len(), self.images.len(), self.composite_units.len(), self.draw_params.len()
         ).into());
         for (id, font) in &self.fonts {
             web_sys::console::log_1(&format!(
-                "[璧勬簮] font id={}, name='{}', family='{}'",
+                "[资源] font id={}, name='{}', family='{}'",
                 id, font.font_name, font.family_name
             ).into());
         }
     }
 
-    /// 鎳掑姞杞藉浘鐗?
+    /// 懒加载图片
     pub fn load_image_lazy(&mut self, resource_id: &str) -> Option<Vec<u8>> {
         if let Some(data) = self.images.get(resource_id) {
             if data.len() > 500 {
                 return Some(data.clone());
             }
-            // 鏄矾寰勶紝灏濊瘯鍔犺浇
+            // 是路径，尝试加载
             let img_path = String::from_utf8_lossy(data).to_string();
             if let Ok(img_data) = self.read_file(&img_path) {
                 self.images.insert(resource_id.to_string(), img_data.clone());
@@ -570,7 +570,7 @@ impl Parser {
             }
         }
 
-        // 灏濊瘯鐩存帴鐢?ID 浣滀负鏂囦欢鍚嶆煡鎵?
+        // 尝试直接用 ID 作为文件名查找
         let files_clone: Vec<String> = self.files.clone();
         for file in &files_clone {
             let lower = file.to_lowercase();
@@ -589,7 +589,7 @@ impl Parser {
     }
 }
 
-/// 瑙ｆ瀽杈圭晫妗?
+/// 解析边界框
 pub fn parse_box(box_str: &str) -> (f64, f64) {
     let mut scanner = NumberScanner::new(box_str);
     let x = scanner.next_float(); // skip x
@@ -597,7 +597,7 @@ pub fn parse_box(box_str: &str) -> (f64, f64) {
     let w = scanner.next_float().unwrap_or(0.0);
     let h = scanner.next_float().unwrap_or(0.0);
     
-    // 璋冭瘯杈撳嚭
+    // 调试输出
     web_sys::console::log_1(&format!(
         "parse_box: input='{}', x={:?}, y={:?}, w={}, h={}",
         box_str, x, y, w, h
@@ -609,7 +609,7 @@ pub fn parse_box(box_str: &str) -> (f64, f64) {
     (w, h)
 }
 
-/// 瑙ｆ瀽杈圭晫
+/// 解析边界
 pub fn parse_boundary(boundary: &str) -> (f64, f64, f64, f64) {
     let mut scanner = NumberScanner::new(boundary);
     let x = scanner.next_float().unwrap_or(0.0);
@@ -619,7 +619,7 @@ pub fn parse_boundary(boundary: &str) -> (f64, f64, f64, f64) {
     (x, y, w, h)
 }
 
-/// 瑙ｆ瀽棰滆壊
+/// 解析颜色
 pub fn parse_color(value: &str) -> String {
     let mut scanner = NumberScanner::new(value);
     if let (Some(r), Some(g), Some(b)) = (scanner.next_float(), scanner.next_float(), scanner.next_float()) {
@@ -628,7 +628,7 @@ pub fn parse_color(value: &str) -> String {
     "#000".to_string()
 }
 
-/// 瑙ｆ瀽CTM鍙樻崲鐭╅樀
+/// 解析 CTM 变换矩阵
 pub fn parse_ctm(ctm_str: &str) -> Vec<f64> {
     let mut result = Vec::with_capacity(6);
     let mut scanner = NumberScanner::new(ctm_str);
@@ -644,7 +644,7 @@ pub fn parse_ctm(ctm_str: &str) -> Vec<f64> {
     result
 }
 
-/// 瑙ｆ瀽DeltaX/DeltaY
+/// 解析 DeltaX/DeltaY
 pub fn parse_deltas(delta_str: &str) -> Vec<f64> {
     let mut result = Vec::new();
     let mut scanner = TokenScanner::new(delta_str);
@@ -665,7 +665,7 @@ pub fn parse_deltas(delta_str: &str) -> Vec<f64> {
     result
 }
 
-/// 鏁板瓧鎵弿鍣?
+/// 数字扫描器
 pub struct NumberScanner<'a> {
     data: &'a [u8],
     pos: usize,
@@ -695,17 +695,17 @@ impl<'a> NumberScanner<'a> {
 
         let start = self.pos;
         
-        // 绗﹀彿
+        // 符号
         if self.pos < self.data.len() && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+') {
             self.pos += 1;
         }
         
-        // 鏁存暟閮ㄥ垎
+        // 整数部分
         while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
             self.pos += 1;
         }
         
-        // 灏忔暟閮ㄥ垎
+        // 小数部分
         if self.pos < self.data.len() && self.data[self.pos] == b'.' {
             self.pos += 1;
             while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
@@ -713,7 +713,7 @@ impl<'a> NumberScanner<'a> {
             }
         }
         
-        // 绉戝璁℃暟娉?
+        // 科学计数法
         if self.pos < self.data.len() && (self.data[self.pos] == b'e' || self.data[self.pos] == b'E') {
             self.pos += 1;
             if self.pos < self.data.len() && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+') {
@@ -734,7 +734,7 @@ impl<'a> NumberScanner<'a> {
     }
 }
 
-/// Token鎵弿鍣?
+/// Token 扫描器
 pub struct TokenScanner<'a> {
     data: &'a [u8],
     pos: usize,

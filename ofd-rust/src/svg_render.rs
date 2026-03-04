@@ -2079,6 +2079,128 @@ impl Parser {
 
 /// 从二进制数据中提取图片（PNG/JPEG）
 fn extract_image_from_binary(data: &[u8]) -> Option<Vec<u8>> {
+    if let Some(img) = extract_image_without_asn1(data) {
+        return Some(img);
+    }
+    extract_image_from_asn1(data)
+}
+
+fn extract_image_without_asn1(data: &[u8]) -> Option<Vec<u8>> {
+    extract_image_from_binary_legacy(data)
+        .or_else(|| extract_gif_by_magic(data))
+        .or_else(|| extract_svg_by_string(data))
+}
+
+fn extract_gif_by_magic(data: &[u8]) -> Option<Vec<u8>> {
+    const GIF89A_SIGNATURE: &[u8] = b"GIF89a";
+    const GIF87A_SIGNATURE: &[u8] = b"GIF87a";
+
+    for i in 0..data.len().saturating_sub(6) {
+        if &data[i..i + 6] == GIF89A_SIGNATURE || &data[i..i + 6] == GIF87A_SIGNATURE {
+            let mut last_3b_pos: Option<usize> = None;
+            for j in (i + 6)..data.len() {
+                if data[j] == 0x3B {
+                    last_3b_pos = Some(j);
+                }
+            }
+            if let Some(j) = last_3b_pos {
+                return Some(data[i..j + 1].to_vec());
+            }
+            return Some(data[i..].to_vec());
+        }
+    }
+
+    None
+}
+
+fn extract_svg_by_string(data: &[u8]) -> Option<Vec<u8>> {
+    let text = String::from_utf8_lossy(data);
+    let text_lower = text.to_lowercase();
+    if let Some(start) = text_lower.find("<svg") {
+        if let Some(end) = text_lower[start..].find("</svg>") {
+            let svg_end = start + end + 6;
+            return Some(text[start..svg_end].as_bytes().to_vec());
+        }
+        return Some(text[start..].as_bytes().to_vec());
+    }
+    None
+}
+
+fn extract_image_from_asn1(data: &[u8]) -> Option<Vec<u8>> {
+    let mut stack: Vec<(Vec<u8>, usize)> = vec![(data.to_vec(), 0)];
+    let mut visited: usize = 0;
+
+    while let Some((node, depth)) = stack.pop() {
+        visited += 1;
+        if depth > 32 || visited > 2000 {
+            continue;
+        }
+
+        if let Some(img) = extract_image_without_asn1(&node) {
+            return Some(img);
+        }
+
+        if let Ok(payloads) = yasna::parse_der(&node, |reader| collect_asn1_payloads(reader)) {
+            for payload in payloads {
+                if payload.is_empty() {
+                    continue;
+                }
+                if let Some(img) = extract_image_without_asn1(&payload) {
+                    return Some(img);
+                }
+                stack.push((payload, depth + 1));
+            }
+        }
+    }
+
+    None
+}
+
+fn collect_asn1_payloads(reader: yasna::BERReader<'_, '_>) -> yasna::ASN1Result<Vec<Vec<u8>>> {
+    use yasna::tags::TAG_BITSTRING;
+    use yasna::tags::TAG_OCTETSTRING;
+
+    let tagged = reader.read_tagged_der()?;
+    let mut out = Vec::new();
+
+    if tagged.tag() == TAG_OCTETSTRING {
+        if let Ok(bytes) = yasna::parse_der(tagged.value(), |r| r.read_bytes()) {
+            out.push(bytes);
+        } else {
+            out.push(tagged.value().to_vec());
+        }
+        return Ok(out);
+    }
+
+    if tagged.tag() == TAG_BITSTRING {
+        if !tagged.value().is_empty() {
+            out.push(tagged.value()[1..].to_vec());
+        }
+        return Ok(out);
+    }
+
+    if tagged.tag().tag_number == yasna::tags::TAG_SEQUENCE.tag_number
+        || tagged.tag().tag_number == yasna::tags::TAG_SET.tag_number
+    {
+        if let Ok(nested) = yasna::parse_der(tagged.value(), |r| {
+            r.collect_sequence_of(|rr| collect_asn1_payloads(rr))
+        }) {
+            for group in nested {
+                for item in group {
+                    out.push(item);
+                }
+            }
+        } else {
+            out.push(tagged.value().to_vec());
+        }
+        return Ok(out);
+    }
+
+    out.push(tagged.value().to_vec());
+    Ok(out)
+}
+
+fn extract_image_from_binary_legacy(data: &[u8]) -> Option<Vec<u8>> {
     let png_sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
     let jpg_sig = [0xFF, 0xD8, 0xFF];
 
