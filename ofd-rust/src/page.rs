@@ -172,9 +172,15 @@ impl Default for TextObject {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_line_width() -> f64 { 0.265 }
-fn default_alpha() -> i32 { 255 }
+fn default_true() -> bool {
+    true
+}
+fn default_line_width() -> f64 {
+    0.265
+}
+fn default_alpha() -> i32 {
+    255
+}
 
 /// 文本内容
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -589,4 +595,3 @@ pub struct SealPicture {
     #[serde(rename = "$text", default)]
     pub data: String,
 }
-
