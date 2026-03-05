@@ -15,7 +15,9 @@ struct GlyphPathBuilder {
 
 impl GlyphPathBuilder {
     fn new() -> Self {
-        GlyphPathBuilder { path: String::new() }
+        GlyphPathBuilder {
+            path: String::new(),
+        }
     }
 }
 
@@ -30,7 +32,11 @@ impl ttf_parser::OutlineBuilder for GlyphPathBuilder {
         let _ = write!(self.path, "Q{:.4},{:.4} {:.4},{:.4} ", x1, -y1, x, -y);
     }
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        let _ = write!(self.path, "C{:.4},{:.4} {:.4},{:.4} {:.4},{:.4} ", x1, -y1, x2, -y2, x, -y);
+        let _ = write!(
+            self.path,
+            "C{:.4},{:.4} {:.4},{:.4} {:.4},{:.4} ",
+            x1, -y1, x2, -y2, x, -y
+        );
     }
     fn close(&mut self) {
         self.path.push_str("Z ");
@@ -47,7 +53,8 @@ fn glyph_to_svg_path(font_data: &[u8], ch: char) -> Option<(String, f64)> {
     if builder.path.is_empty() {
         return None;
     }
-    let advance = face.glyph_hor_advance(glyph_id)
+    let advance = face
+        .glyph_hor_advance(glyph_id)
         .map(|a| a as f64)
         .unwrap_or(0.0);
     Some((builder.path, advance))
@@ -62,9 +69,7 @@ fn glyph_id_to_svg_path(font_data: &[u8], glyph_id: u16) -> Option<(String, f64)
     if builder.path.is_empty() {
         return None;
     }
-    let advance = face.glyph_hor_advance(gid)
-        .map(|a| a as f64)
-        .unwrap_or(0.0);
+    let advance = face.glyph_hor_advance(gid).map(|a| a as f64).unwrap_or(0.0);
     Some((builder.path, advance))
 }
 
@@ -137,7 +142,9 @@ pub fn get_font_aliases(name: &str) -> Vec<&'static str> {
     // 去掉竖排字体前缀 @
     let name = name.strip_prefix('@').unwrap_or(name);
     match name {
-        "仿宋" | "仿宋_GB2312" => vec!["FangSong", "FangSong_GB2312", "STFangsong", "STFangSong"],
+        "仿宋" | "仿宋_GB2312" => {
+            vec!["FangSong", "FangSong_GB2312", "STFangsong", "STFangSong"]
+        }
         "黑体" => vec!["SimHei", "STHeiti", "Heiti SC"],
         "宋体" | "SimSun" => vec!["SimSun", "STSong", "Songti SC", "NSimSun"],
         "楷体" | "楷体_GB2312" => vec!["KaiTi", "KaiTi_GB2312", "STKaiti", "Kaiti SC"],
@@ -261,28 +268,51 @@ impl Parser {
         ));
 
         // 渲染模板层
-        self.render_template_svg(&mut svg_parts, &mut text_overlay, &page, scale, width, height);
+        self.render_template_svg(
+            &mut svg_parts,
+            &mut text_overlay,
+            &page,
+            scale,
+            width,
+            height,
+        );
 
         // 印章（含 ASN.1 提取图片）先渲染，确保后续文字层在其上方
-        self.load_stamps_svg(&mut svg_parts, &mut text_overlay, scale, page_index, width, height);
+        self.load_stamps_svg(
+            &mut svg_parts,
+            &mut text_overlay,
+            scale,
+            page_index,
+            width,
+            height,
+        );
 
         // 获取页面层
         let layers = self.get_page_layers(&page);
 
-        web_sys::console::log_1(&format!(
-            "[SVG渲染] page_index={}, templates={}, layers={}, page_xml_len={}",
-            page_index, page.template.len(), layers.len(), page_xml.len()
-        ).into());
+        web_sys::console::log_1(
+            &format!(
+                "[SVG渲染] page_index={}, templates={}, layers={}, page_xml_len={}",
+                page_index,
+                page.template.len(),
+                layers.len(),
+                page_xml.len()
+            )
+            .into(),
+        );
 
         for (li, layer) in layers.iter().enumerate() {
             let path_count = layer.path_objects().count();
             let img_count = layer.image_objects().count();
             let text_count = layer.text_objects().count();
             let composite_count = layer.composite_objects().count();
-            web_sys::console::log_1(&format!(
-                "[SVG] layer[{}]: paths={}, images={}, texts={}, composites={}",
-                li, path_count, img_count, text_count, composite_count
-            ).into());
+            web_sys::console::log_1(
+                &format!(
+                    "[SVG] layer[{}]: paths={}, images={}, texts={}, composites={}",
+                    li, path_count, img_count, text_count, composite_count
+                )
+                .into(),
+            );
 
             // Resolve layer-level DrawParam
             let layer_dp = if !layer.draw_param.is_empty() {
@@ -295,7 +325,9 @@ impl Parser {
             for obj in &layer.objects {
                 match obj {
                     LayerObject::PathObject(path_obj) => {
-                        if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, width, height, &layer_dp) {
+                        if let Some(s) = self
+                            .path_object_to_svg_with_dp(path_obj, scale, width, height, &layer_dp)
+                        {
                             svg_parts.push(s);
                         }
                     }
@@ -305,20 +337,35 @@ impl Parser {
                         }
                     }
                     LayerObject::TextObject(text) => {
-                        let (text_svgs, overlays, html_items) = self.render_text_svg(text, scale, &layer_dp);
+                        let (text_svgs, overlays, html_items) =
+                            self.render_text_svg(text, scale, &layer_dp);
                         svg_parts.extend(text_svgs);
                         text_overlay.extend(overlays);
                         html_texts.extend(html_items);
                     }
                     LayerObject::CompositeObject(comp) => {
-                        self.render_composite_object_svg(&mut svg_parts, &mut text_overlay, comp, scale, width, height);
+                        self.render_composite_object_svg(
+                            &mut svg_parts,
+                            &mut text_overlay,
+                            comp,
+                            scale,
+                            width,
+                            height,
+                        );
                     }
                 }
             }
         }
 
         // 注释
-        self.load_page_annot_svg(&mut svg_parts, &mut text_overlay, scale, page_index, width, height);
+        self.load_page_annot_svg(
+            &mut svg_parts,
+            &mut text_overlay,
+            scale,
+            page_index,
+            width,
+            height,
+        );
 
         // SVG 不设固定 width/height，只用 viewBox + CSS 100% 填充容器
         // 这样避免 SVG 固有尺寸与容器尺寸不一致导致的二次缩放模糊
@@ -326,7 +373,8 @@ impl Parser {
             r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {:.2} {:.2}" text-rendering="geometricPrecision" shape-rendering="geometricPrecision" color-interpolation="linearRGB">
 {}
 </svg>"#,
-            px_w, px_h,
+            px_w,
+            px_h,
             svg_parts.join("\n")
         );
 
@@ -366,7 +414,9 @@ impl Parser {
             None => return,
         };
 
-        let doc_base = self.ofd.as_ref()
+        let doc_base = self
+            .ofd
+            .as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| {
                 let doc_root = body.doc_root.trim_start_matches('/');
@@ -414,7 +464,9 @@ impl Parser {
                 for obj in &layer.objects {
                     match obj {
                         LayerObject::PathObject(path_obj) => {
-                            if let Some(s) = self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, &layer_dp) {
+                            if let Some(s) = self.path_object_to_svg_with_dp(
+                                path_obj, scale, page_w, page_h, &layer_dp,
+                            ) {
                                 svg_parts.push(s);
                             }
                         }
@@ -424,7 +476,8 @@ impl Parser {
                             }
                         }
                         LayerObject::TextObject(text) => {
-                            let (text_svgs, overlays, _html_items) = self.render_text_svg(text, scale, &layer_dp);
+                            let (text_svgs, overlays, _html_items) =
+                                self.render_text_svg(text, scale, &layer_dp);
                             svg_parts.extend(text_svgs);
                             text_overlay.extend(overlays);
                         }
@@ -436,7 +489,13 @@ impl Parser {
     }
 
     /// 将 PathObject 转换为 SVG path 元素
-    fn path_object_to_svg(&mut self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64) -> Option<String> {
+    fn path_object_to_svg(
+        &mut self,
+        path_obj: &PathObject,
+        scale: f64,
+        page_w: f64,
+        page_h: f64,
+    ) -> Option<String> {
         self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, &None)
     }
 
@@ -451,15 +510,8 @@ impl Parser {
         } else {
             Vec::new()
         };
-        let cmd_json = convert_ofd_path_to_canvas(
-            &path_obj.abbreviated_data,
-            scale,
-            bx,
-            by,
-            &ctm,
-            0.0,
-            0.0,
-        );
+        let cmd_json =
+            convert_ofd_path_to_canvas(&path_obj.abbreviated_data, scale, bx, by, &ctm, 0.0, 0.0);
         let cmds: Vec<serde_json::Value> = match serde_json::from_str(&cmd_json) {
             Ok(c) => c,
             Err(_) => return None,
@@ -685,12 +737,7 @@ impl Parser {
             let ty = (by + f) * scale;
             format!(
                 r#" patternTransform="matrix({:.6},{:.6},{:.6},{:.6},{:.6},{:.6})""#,
-                a,
-                b,
-                c,
-                d,
-                tx,
-                ty
+                a, b, c, d, tx, ty
             )
         } else {
             String::new()
@@ -707,7 +754,14 @@ impl Parser {
     }
 
     /// 将 PathObject 转换为 SVG path 元素（支持 DrawParam 继承）
-    fn path_object_to_svg_with_dp(&mut self, path_obj: &PathObject, scale: f64, page_w: f64, page_h: f64, layer_dp: &Option<DrawParam>) -> Option<String> {
+    fn path_object_to_svg_with_dp(
+        &mut self,
+        path_obj: &PathObject,
+        scale: f64,
+        page_w: f64,
+        page_h: f64,
+        layer_dp: &Option<DrawParam>,
+    ) -> Option<String> {
         if path_obj.abbreviated_data.is_empty() {
             return None;
         }
@@ -731,8 +785,13 @@ impl Parser {
 
         // 使用已有的路径转换函数获取 JSON 命令
         let cmd_json = convert_ofd_path_to_canvas(
-            &path_obj.abbreviated_data, scale, bx, by, &ctm,
-            page_w * scale, page_h * scale,
+            &path_obj.abbreviated_data,
+            scale,
+            bx,
+            by,
+            &ctm,
+            page_w * scale,
+            page_h * scale,
         );
 
         // 解析 JSON 命令数组，转换为 SVG path d 属性
@@ -778,7 +837,11 @@ impl Parser {
                     let y2 = c.get("y2").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let _ = write!(d, "C{:.4},{:.4} {:.4},{:.4} {:.4},{:.4} ", x1, y1, x2, y2, x, y);
+                    let _ = write!(
+                        d,
+                        "C{:.4},{:.4} {:.4},{:.4} {:.4},{:.4} ",
+                        x1, y1, x2, y2, x, y
+                    );
                 }
                 "Q" => {
                     let x1 = c.get("x1").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -828,7 +891,11 @@ impl Parser {
                 let gy1 = (grad.y1 + by) * scale;
                 let mut stops = String::new();
                 for s in &grad.stops {
-                    let _ = write!(stops, r#"<stop offset="{:.2}" stop-color="{}"/>"#, s.position, s.color);
+                    let _ = write!(
+                        stops,
+                        r#"<stop offset="{:.2}" stop-color="{}"/>"#,
+                        s.position, s.color
+                    );
                 }
                 defs_svg = format!(
                     r#"<defs><linearGradient id="{}" x1="{:.4}" y1="{:.4}" x2="{:.4}" y2="{:.4}" gradientUnits="userSpaceOnUse">{}</linearGradient></defs>"#,
@@ -843,7 +910,11 @@ impl Parser {
                 let r1 = grad.r1.unwrap_or(0.0) * scale;
                 let mut stops = String::new();
                 for s in &grad.stops {
-                    let _ = write!(stops, r#"<stop offset="{:.2}" stop-color="{}"/>"#, s.position, s.color);
+                    let _ = write!(
+                        stops,
+                        r#"<stop offset="{:.2}" stop-color="{}"/>"#,
+                        s.position, s.color
+                    );
                 }
                 defs_svg = format!(
                     r#"<defs><radialGradient id="{}" cx="{:.4}" cy="{:.4}" r="{:.4}" gradientUnits="userSpaceOnUse">{}</radialGradient></defs>"#,
@@ -919,10 +990,12 @@ impl Parser {
             let css_px_per_mm = 3.78_f64;
             let thin_boundary_px = thin_boundary_mm * css_px_per_mm;
             let declared_lw = path_obj.line_width;
-            let very_thin_declared =
-                (declared_lw > 0.0 && declared_lw <= 0.06) || (declared_lw == 0.0 && thin_boundary_px <= 0.6);
-            thin_line_candidate =
-                is_stroke_only && is_line_only_path && very_thin_declared && thin_boundary_px <= 1.5;
+            let very_thin_declared = (declared_lw > 0.0 && declared_lw <= 0.06)
+                || (declared_lw == 0.0 && thin_boundary_px <= 0.6);
+            thin_line_candidate = is_stroke_only
+                && is_line_only_path
+                && very_thin_declared
+                && thin_boundary_px <= 1.5;
             if thin_line_candidate {
                 let hi_dpi = (scale / css_px_per_mm).max(1.0);
                 let min_css_px = 1.0_f64;
@@ -992,7 +1065,8 @@ impl Parser {
 
         // DashPattern → stroke-dasharray
         if !path_obj.dash_pattern.is_empty() && has_stroke {
-            let dash_values: Vec<String> = path_obj.dash_pattern
+            let dash_values: Vec<String> = path_obj
+                .dash_pattern
                 .split_whitespace()
                 .map(|v| {
                     let val: f64 = v.parse().unwrap_or(0.0);
@@ -1030,9 +1104,7 @@ impl Parser {
         if bw > 0.0 && bh > 0.0 {
             Some(format!(
                 r#"<svg x="{:.4}" y="{:.4}" width="{:.4}" height="{:.4}" viewBox="{:.4} {:.4} {:.4} {:.4}" overflow="hidden">{}</svg>"#,
-                clip_x, clip_y, clip_w, clip_h,
-                clip_x, clip_y, clip_w, clip_h,
-                inner
+                clip_x, clip_y, clip_w, clip_h, clip_x, clip_y, clip_w, clip_h, inner
             ))
         } else {
             Some(inner)
@@ -1076,7 +1148,14 @@ impl Parser {
                 let py = iy * scale;
                 return Some(format!(
                     r#"<image href="{}" x="0" y="0" width="1" height="1" transform="matrix({:.6},{:.6},{:.6},{:.6},{:.6},{:.6})" preserveAspectRatio="none"{}/>"#,
-                    data_url, a, b, c, d, px + e, py + f, opacity_attr
+                    data_url,
+                    a,
+                    b,
+                    c,
+                    d,
+                    px + e,
+                    py + f,
+                    opacity_attr
                 ));
             }
         }
@@ -1169,13 +1248,21 @@ impl Parser {
         // 这种模式在 OFD 中很常见，浏览器对超大 font-size 渲染不佳
         let ctm_scale_y = if has_ctm {
             let sy = (ctm[2] * ctm[2] + ctm[3] * ctm[3]).sqrt();
-            if sy > 0.0001 { sy } else { 1.0 }
+            if sy > 0.0001 {
+                sy
+            } else {
+                1.0
+            }
         } else {
             1.0
         };
         let ctm_scale_x = if has_ctm {
             let sx = (ctm[0] * ctm[0] + ctm[1] * ctm[1]).sqrt();
-            if sx > 0.0001 { sx } else { 1.0 }
+            if sx > 0.0001 {
+                sx
+            } else {
+                1.0
+            }
         } else {
             1.0
         };
@@ -1269,7 +1356,10 @@ impl Parser {
             // 平移部分 (bx+e, by+f) 从 mm 转为 px
             results.push(format!(
                 r#"<g transform="matrix({:.6},{:.6},{:.6},{:.6},{:.2},{:.2})"{}>"#,
-                na, nb, nc, nd,
+                na,
+                nb,
+                nc,
+                nd,
                 (bx + e) * scale,
                 (by + f) * scale,
                 opacity_attr
@@ -1280,18 +1370,29 @@ impl Parser {
         }
 
         // 构建 CGTransform 字形映射：字符索引 → GlyphID
-        let mut cg_glyph_map: std::collections::HashMap<usize, u16> = std::collections::HashMap::new();
+        let mut cg_glyph_map: std::collections::HashMap<usize, u16> =
+            std::collections::HashMap::new();
         if !text.cg_transform.is_empty() {
             for cgt in &text.cg_transform {
                 if cgt.glyphs.is_empty() {
                     continue;
                 }
-                let glyph_ids: Vec<u16> = cgt.glyphs.split_whitespace()
+                let glyph_ids: Vec<u16> = cgt
+                    .glyphs
+                    .split_whitespace()
                     .filter_map(|s| s.parse::<u16>().ok())
                     .collect();
                 let code_pos = cgt.code_position as usize;
-                let code_count = if cgt.code_count > 0 { cgt.code_count as usize } else { 1 };
-                let glyph_count = if cgt.glyph_count > 0 { cgt.glyph_count as usize } else { glyph_ids.len() };
+                let code_count = if cgt.code_count > 0 {
+                    cgt.code_count as usize
+                } else {
+                    1
+                };
+                let glyph_count = if cgt.glyph_count > 0 {
+                    cgt.glyph_count as usize
+                } else {
+                    glyph_ids.len()
+                };
                 // 简单映射：每个 code position 对应一个 glyph
                 for gi in 0..glyph_count.min(glyph_ids.len()) {
                     let char_idx = code_pos + gi.min(code_count.saturating_sub(1));
@@ -1299,10 +1400,13 @@ impl Parser {
                 }
             }
             if !cg_glyph_map.is_empty() {
-                web_sys::console::log_1(&format!(
-                    "[CGTransform] TextObject id={}, mappings={:?}",
-                    text.id, cg_glyph_map
-                ).into());
+                web_sys::console::log_1(
+                    &format!(
+                        "[CGTransform] TextObject id={}, mappings={:?}",
+                        text.id, cg_glyph_map
+                    )
+                    .into(),
+                );
             }
         }
 
@@ -1387,28 +1491,38 @@ impl Parser {
                     // 尝试文字转曲：从嵌入字体提取字形轮廓
                     // 优先使用 CGTransform 的 GlyphID 映射，否则按 Unicode 查找
                     // 仅当字体没有系统别名或有 CGTransform 映射时才使用 glyph path
-                    let has_system_font = self.fonts.get(font_id).map(|f| {
-                        !get_font_aliases(&f.font_name).is_empty()
-                            || !get_font_aliases(&f.family_name).is_empty()
-                    }).unwrap_or(false);
+                    let has_system_font = self
+                        .fonts
+                        .get(font_id)
+                        .map(|f| {
+                            !get_font_aliases(&f.font_name).is_empty()
+                                || !get_font_aliases(&f.family_name).is_empty()
+                        })
+                        .unwrap_or(false);
 
                     let glyph_path = if let Some(gid) = cg_glyph_id {
                         // CGTransform 指定了 GlyphID，直接按 ID 提取（优先级最高）
-                        self.font_files.get(font_id)
+                        self.font_files
+                            .get(font_id)
                             .and_then(|data| glyph_id_to_svg_path(data, gid))
                     } else if use_cg_transform {
                         None
                     } else if has_system_font {
                         None // 有系统字体且无 CGTransform，统一用 <text> 渲染
                     } else {
-                        self.font_files.get(font_id)
+                        self.font_files
+                            .get(font_id)
                             .and_then(|data| glyph_to_svg_path(data, ch))
                     };
 
                     // 首个字符输出调试信息
                     if i == 0 {
                         let has_font_file = self.font_files.contains_key(font_id);
-                        let font_info = self.fonts.get(font_id).map(|f| format!("name='{}' family='{}'", f.font_name, f.family_name)).unwrap_or_default();
+                        let font_info = self
+                            .fonts
+                            .get(font_id)
+                            .map(|f| format!("name='{}' family='{}'", f.font_name, f.family_name))
+                            .unwrap_or_default();
                         web_sys::console::log_1(&format!(
                             "[文字渲染] TextObject id={}, font_id={}, {}, has_font_file={}, glyph_path={}, cg_glyph_id={:?}, char='{}', font_size_px={:.2}",
                             text.id, font_id, font_info, has_font_file, glyph_path.is_some(), cg_glyph_id, ch, font_size_px
@@ -1417,7 +1531,9 @@ impl Parser {
 
                     if let Some((path_d, _advance)) = glyph_path {
                         // 字体坐标系：units_per_em → 需要缩放到目标字号
-                        let units_per_em = self.font_files.get(font_id)
+                        let units_per_em = self
+                            .font_files
+                            .get(font_id)
                             .and_then(|data| ttf_parser::Face::parse(data, 0).ok())
                             .map(|f| f.units_per_em() as f64)
                             .unwrap_or(1000.0);
@@ -1440,7 +1556,10 @@ impl Parser {
                             // 将像素空间的 stroke-width 转换到字形坐标空间
                             let avg_scale = ((sx.abs() + sy.abs()) / 2.0).max(0.0001);
                             let glyph_lw = lw / avg_scale;
-                            format!(r#" stroke="{}" stroke-width="{:.4}" stroke-linejoin="round""#, sc, glyph_lw)
+                            format!(
+                                r#" stroke="{}" stroke-width="{:.4}" stroke-linejoin="round""#,
+                                sc, glyph_lw
+                            )
                         } else {
                             String::new()
                         };
@@ -1453,7 +1572,10 @@ impl Parser {
 
                         let svg_path = format!(
                             r#"<path d="{}" {}{} transform="{}"/>"#,
-                            path_d.trim(), fill_attr, glyph_stroke_attr, transform
+                            path_d.trim(),
+                            fill_attr,
+                            glyph_stroke_attr,
+                            transform
                         );
                         results.push(svg_path);
                     } else if cg_glyph_id.is_none() && !is_space {
@@ -1496,8 +1618,16 @@ impl Parser {
 
                         let svg_text = format!(
                             r#"<text x="{:.4}" y="{:.4}" font-size="{:.4}" font-family="{}"{} {}{}{}{}>{}</text>"#,
-                            px_x, px_y, text_font_size, font_family,
-                            char_transform_attr, fill_attr, weight_attr, italic_attr, stroke_attr, escaped
+                            px_x,
+                            px_y,
+                            text_font_size,
+                            font_family,
+                            char_transform_attr,
+                            fill_attr,
+                            weight_attr,
+                            italic_attr,
+                            stroke_attr,
+                            escaped
                         );
                         results.push(svg_text);
                     }
@@ -1511,14 +1641,21 @@ impl Parser {
                 } else {
                     0.0
                 };
-                let dy = if i < delta_y.len() { delta_y[i] * ctm_scale_y } else { 0.0 };
+                let dy = if i < delta_y.len() {
+                    delta_y[i] * ctm_scale_y
+                } else {
+                    0.0
+                };
                 current_x_mm += dx;
                 current_y_mm += dy;
             }
 
             // 文本蒙层
             if !chars.is_empty() {
-                let txt: String = chars.iter().filter(|c| **c != ' ' && **c != '\u{3000}' && **c != '\u{00A0}').collect();
+                let txt: String = chars
+                    .iter()
+                    .filter(|c| **c != ' ' && **c != '\u{3000}' && **c != '\u{00A0}')
+                    .collect();
                 if !txt.is_empty() {
                     let first_x = tc.x;
                     let first_y = tc.y;
@@ -1526,11 +1663,16 @@ impl Parser {
                     let font_size_ol = font_size * scale;
 
                     let (ox, oy) = if has_ctm {
-                        let a = ctm[0]; let b_v = ctm[1]; let c_v = ctm[2]; let d = ctm[3];
+                        let a = ctm[0];
+                        let b_v = ctm[1];
+                        let c_v = ctm[2];
+                        let d = ctm[3];
                         let e = if ctm.len() > 4 { ctm[4] } else { 0.0 };
                         let f_v = if ctm.len() > 5 { ctm[5] } else { 0.0 };
-                        ((a * first_x + c_v * first_y + e + bx) * scale,
-                         (b_v * first_x + d * first_y + f_v + by) * scale)
+                        (
+                            (a * first_x + c_v * first_y + e + bx) * scale,
+                            (b_v * first_x + d * first_y + f_v + by) * scale,
+                        )
                     } else {
                         ((bx + first_x) * scale, (by + first_y) * scale)
                     };
@@ -1572,10 +1714,13 @@ impl Parser {
         let unit = match self.composite_units.get(&comp.resource_id) {
             Some(u) => u.clone(),
             None => {
-                web_sys::console::log_1(&format!(
-                    "[CompositeObject] unit not found: ResourceID={}",
-                    comp.resource_id
-                ).into());
+                web_sys::console::log_1(
+                    &format!(
+                        "[CompositeObject] unit not found: ResourceID={}",
+                        comp.resource_id
+                    )
+                    .into(),
+                );
                 return;
             }
         };
@@ -1593,7 +1738,8 @@ impl Parser {
         // 使用实际包围盒计算缩放，如果实际包围盒有效的话
         let (unit_w, unit_h) = if actual_w > 0.1 && actual_h > 0.1 {
             // 检查 unit 声明的宽高是否明显不合理（比如等于页面尺寸 210x297）
-            let declared_seems_wrong = (unit.width - page_w).abs() < 1.0 && (unit.height - page_h).abs() < 1.0;
+            let declared_seems_wrong =
+                (unit.width - page_w).abs() < 1.0 && (unit.height - page_h).abs() < 1.0;
             let ratio_off = if unit.width > 0.0 && unit.height > 0.0 {
                 let r1 = cw / unit.width;
                 let r2 = ch / unit.height;
@@ -1621,7 +1767,10 @@ impl Parser {
         // 用 SVG <g> 包裹，应用位移和缩放
         svg_parts.push(format!(
             r#"<g transform="translate({:.4},{:.4}) scale({:.6},{:.6})">"#,
-            cx * scale, cy * scale, sx, sy
+            cx * scale,
+            cy * scale,
+            sx,
+            sy
         ));
 
         for obj in &page_block.objects {
@@ -1637,7 +1786,8 @@ impl Parser {
                     }
                 }
                 LayerObject::TextObject(text) => {
-                    let (text_svgs, overlays, _html_items) = self.render_text_svg(text, scale, &None);
+                    let (text_svgs, overlays, _html_items) =
+                        self.render_text_svg(text, scale, &None);
                     svg_parts.extend(text_svgs);
                     text_overlay.extend(overlays);
                 }
@@ -1651,11 +1801,7 @@ impl Parser {
     }
 
     /// 计算复合图元内所有子元素的实际包围盒（mm 空间）
-    fn compute_composite_bbox(
-        &self,
-        page_block: &CompositePageBlock,
-        _scale: f64,
-    ) -> (f64, f64) {
+    fn compute_composite_bbox(&self, page_block: &CompositePageBlock, _scale: f64) -> (f64, f64) {
         let mut min_x = f64::MAX;
         let mut min_y = f64::MAX;
         let mut max_x = f64::MIN;
@@ -1739,7 +1885,15 @@ impl Parser {
     }
 
     /// 加载页面注释为 SVG 元素
-    fn load_page_annot_svg(&mut self, svg_parts: &mut Vec<String>, text_overlay: &mut Vec<TextOverlayItem>, scale: f64, page_index: usize, page_w: f64, page_h: f64) {
+    fn load_page_annot_svg(
+        &mut self,
+        svg_parts: &mut Vec<String>,
+        text_overlay: &mut Vec<TextOverlayItem>,
+        scale: f64,
+        page_index: usize,
+        page_w: f64,
+        page_h: f64,
+    ) {
         let doc = match self.document.as_ref() {
             Some(d) => d.clone(),
             None => return,
@@ -1749,7 +1903,9 @@ impl Parser {
         }
 
         let page_id = doc.pages.page[page_index].id.clone();
-        let _doc_base = self.ofd.as_ref()
+        let _doc_base = self
+            .ofd
+            .as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| {
                 let doc_root = body.doc_root.trim_start_matches('/');
@@ -1811,7 +1967,11 @@ impl Parser {
                 continue;
             }
 
-            let annot_file_path = format!("{}/{}", annot_index_dir, ap.file_loc.trim_start_matches('/'));
+            let annot_file_path = format!(
+                "{}/{}",
+                annot_index_dir,
+                ap.file_loc.trim_start_matches('/')
+            );
             let annot_data = match self.read_file(&annot_file_path) {
                 Ok(d) => d,
                 Err(_) => continue,
@@ -1834,7 +1994,8 @@ impl Parser {
                 // 用 <g> 包裹注释，偏移到注释位置
                 svg_parts.push(format!(
                     r#"<g transform="translate({:.4},{:.4})">"#,
-                    ax * scale, ay * scale
+                    ax * scale,
+                    ay * scale
                 ));
 
                 // 处理 PageBlock 内的对象
@@ -1847,12 +2008,15 @@ impl Parser {
                                 }
                             }
                             crate::page::LayerObject::PathObject(path_obj) => {
-                                if let Some(s) = self.path_object_to_svg(path_obj, scale, page_w, page_h) {
+                                if let Some(s) =
+                                    self.path_object_to_svg(path_obj, scale, page_w, page_h)
+                                {
                                     svg_parts.push(s);
                                 }
                             }
                             crate::page::LayerObject::TextObject(text_obj) => {
-                                let (text_svgs, overlays, _html) = self.render_text_svg(text_obj, scale, &None);
+                                let (text_svgs, overlays, _html) =
+                                    self.render_text_svg(text_obj, scale, &None);
                                 svg_parts.extend(text_svgs);
                                 text_overlay.extend(overlays);
                             }
@@ -1935,10 +2099,7 @@ impl Parser {
 
             for sig in &sigs.signature {
                 let sig_loc = sig.base_loc.trim_start_matches('/');
-                let candidates = vec![
-                    format!("{}/{}", base_path, sig_loc),
-                    sig_loc.to_string(),
-                ];
+                let candidates = vec![format!("{}/{}", base_path, sig_loc), sig_loc.to_string()];
 
                 let mut sig_data = None;
                 let mut sig_path = String::new();
@@ -2018,7 +2179,8 @@ impl Parser {
 
             // 尝试加载印章图片
             if let Some(seal_img) = self.find_seal_image(&item.sig_dir) {
-                let mime_type = if seal_img.len() > 2 && seal_img[0] == 0xFF && seal_img[1] == 0xD8 {
+                let mime_type = if seal_img.len() > 2 && seal_img[0] == 0xFF && seal_img[1] == 0xD8
+                {
                     "image/jpeg"
                 } else {
                     "image/png"
@@ -2065,8 +2227,9 @@ impl Parser {
         let files_clone: Vec<String> = self.files.clone();
         for file in &files_clone {
             let lower = file.to_lowercase();
-            if (lower.starts_with(&sig_dir_lower) || lower.contains(sig_dir)) &&
-               (lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")) {
+            if (lower.starts_with(&sig_dir_lower) || lower.contains(sig_dir))
+                && (lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg"))
+            {
                 if let Ok(data) = self.read_file(file) {
                     return Some(data);
                 }
@@ -2209,7 +2372,11 @@ fn extract_image_from_binary_legacy(data: &[u8]) -> Option<Vec<u8>> {
         if data[i..i + 8] == png_sig {
             // 找 IEND
             for j in i + 8..data.len().saturating_sub(8) {
-                if data[j] == 0x49 && data[j + 1] == 0x45 && data[j + 2] == 0x4E && data[j + 3] == 0x44 {
+                if data[j] == 0x49
+                    && data[j + 1] == 0x45
+                    && data[j + 2] == 0x4E
+                    && data[j + 3] == 0x44
+                {
                     return Some(data[i..j + 8].to_vec());
                 }
             }

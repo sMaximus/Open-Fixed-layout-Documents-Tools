@@ -1,13 +1,13 @@
 //! OFD parser
 
-use std::collections::HashMap;
+use regex::Regex;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Read;
 use zip::ZipArchive;
-use regex::Regex;
 
-use crate::types::*;
 use crate::page::*;
+use crate::types::*;
 
 /// Parse result
 #[derive(Debug, Default)]
@@ -51,7 +51,8 @@ impl Parser {
 
         // Large OFD optimization: index entries first, defer decompression to read_file().
         for i in 0..archive.len() {
-            let file = archive.by_index(i)
+            let file = archive
+                .by_index(i)
                 .map_err(|e| format!("failed to read ZIP entry: {}", e))?;
             let name = file.name().to_string();
             let lower = name.to_lowercase();
@@ -108,9 +109,9 @@ impl Parser {
                 return Ok(result);
             }
         };
-        
+
         let ofd_xml = Self::remove_namespace_prefix(&String::from_utf8_lossy(&ofd_data));
-        
+
         self.ofd = match quick_xml::de::from_str(&ofd_xml) {
             Ok(o) => Some(o),
             Err(e) => {
@@ -124,8 +125,9 @@ impl Parser {
         if let Some(ref ofd) = self.ofd {
             if !ofd.doc_body.is_empty() {
                 let doc_root = ofd.doc_body[0].doc_root.trim_start_matches('/');
-                
-                let doc_data = self.read_file(doc_root)
+
+                let doc_data = self
+                    .read_file(doc_root)
                     .or_else(|_| self.read_file("Doc_0/Document.xml"));
 
                 if let Ok(data) = doc_data {
@@ -138,15 +140,18 @@ impl Parser {
                             return Ok(result);
                         }
                     };
-                    
+
                     if let Some(ref doc) = self.document {
                         result.page_count = doc.pages.page.len();
                         // 调试输出
-                        web_sys::console::log_1(&format!(
-                            "Document parsed: page_count={}, physical_box='{}'",
-                            doc.pages.page.len(),
-                            doc.common_data.page_area.physical_box
-                        ).into());
+                        web_sys::console::log_1(
+                            &format!(
+                                "Document parsed: page_count={}, physical_box='{}'",
+                                doc.pages.page.len(),
+                                doc.common_data.page_area.physical_box
+                            )
+                            .into(),
+                        );
                     }
                     result.document = self.document.clone();
                 } else {
@@ -176,8 +181,8 @@ impl Parser {
         }
 
         let cursor = std::io::Cursor::new(self.zip_data.as_slice());
-        let mut archive = ZipArchive::new(cursor)
-            .map_err(|e| format!("failed to reopen ZIP: {}", e))?;
+        let mut archive =
+            ZipArchive::new(cursor).map_err(|e| format!("failed to reopen ZIP: {}", e))?;
 
         let mut file = archive
             .by_index(file_index)
@@ -237,11 +242,11 @@ impl Parser {
         let lower = name.to_lowercase();
         lower.ends_with(".xml") || lower.ends_with(".ofd") || lower.ends_with(".txt")
     }
-    /// 移除 XML 命名空间前缀
+    /// 移除XML命名空间前缀
     pub fn remove_namespace_prefix(xml_str: &str) -> String {
         let re1 = Regex::new(r"<(/?)ofd:").unwrap();
         let result = re1.replace_all(xml_str, "<$1");
-        
+
         let re2 = Regex::new(r#"\s+xmlns:[^=]+="[^"]*""#).unwrap();
         let result = re2.replace_all(&result, "").to_string();
 
@@ -287,10 +292,11 @@ impl Parser {
 
             let preserved: String = result_chars.into_iter().collect();
             format!("{}{}{}", open_tag, preserved, close_tag)
-        }).to_string()
+        })
+        .to_string()
     }
 
-    /// 合并重复的 XML 元素（如多个 PublicRes、DocumentRes）
+    /// 合并重复的XML元素（如多个 PublicRes、DocumentRes）
     /// quick-xml 反序列化不支持重复同名元素，去除重复只保留第一个
     pub fn dedup_xml_elements(xml_str: &str) -> String {
         let mut result = xml_str.to_string();
@@ -301,7 +307,10 @@ impl Parser {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            let matches: Vec<_> = re.find_iter(&result).map(|m| (m.start(), m.end())).collect();
+            let matches: Vec<_> = re
+                .find_iter(&result)
+                .map(|m| (m.start(), m.end()))
+                .collect();
             if matches.len() > 1 {
                 for &(start, end) in matches[1..].iter().rev() {
                     result.replace_range(start..end, "");
@@ -318,14 +327,16 @@ impl Parser {
 
     /// 获取文档信息
     pub fn get_doc_info(&self) -> Option<&DocInfo> {
-        self.ofd.as_ref()
+        self.ofd
+            .as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| &body.doc_info)
     }
 
     /// 获取页数
     pub fn get_page_count(&self) -> usize {
-        self.document.as_ref()
+        self.document
+            .as_ref()
             .map(|doc| doc.pages.page.len())
             .unwrap_or(0)
     }
@@ -337,7 +348,9 @@ impl Parser {
         let page_loc = page_ref.base_loc.trim_start_matches('/');
 
         // 获取文档根目录
-        let doc_base = self.ofd.as_ref()
+        let doc_base = self
+            .ofd
+            .as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| {
                 let doc_root = body.doc_root.trim_start_matches('/');
@@ -358,8 +371,12 @@ impl Parser {
 
         for candidate in &candidates {
             for file in &self.files {
-                if file.eq_ignore_ascii_case(candidate) || 
-                   file.to_lowercase().ends_with(&format!("/{}", std::path::Path::new(candidate).file_name()?.to_str()?)) {
+                if file.eq_ignore_ascii_case(candidate)
+                    || file.to_lowercase().ends_with(&format!(
+                        "/{}",
+                        std::path::Path::new(candidate).file_name()?.to_str()?
+                    ))
+                {
                     return Some(file.clone());
                 }
             }
@@ -415,7 +432,9 @@ impl Parser {
         }
 
         // 获取文档根目录
-        let doc_base = self.ofd.as_ref()
+        let doc_base = self
+            .ofd
+            .as_ref()
             .and_then(|ofd| ofd.doc_body.first())
             .map(|body| {
                 let doc_root = body.doc_root.trim_start_matches('/');
@@ -428,12 +447,13 @@ impl Parser {
             .unwrap_or_default();
 
         let files_clone: Vec<String> = self.files.clone();
-        
+
         for file in &files_clone {
             let lower = file.to_lowercase();
-            if !lower.ends_with("publicres.xml") && 
-               !lower.ends_with("documentres.xml") &&
-               !(lower.contains("res") && lower.ends_with(".xml")) {
+            if !lower.ends_with("publicres.xml")
+                && !lower.ends_with("documentres.xml")
+                && !(lower.contains("res") && lower.ends_with(".xml"))
+            {
                 continue;
             }
 
@@ -458,27 +478,39 @@ impl Parser {
                 for font in &fonts.font {
                     let mut font_clone = font.clone();
                     if !font.font_file.is_empty() {
-                        font_clone.font_file = format!("{}/{}/{}", base_path, res.base_loc, font.font_file);
-                        // 预加载字体文件数据，标记该字体有嵌入文件
+                        font_clone.font_file =
+                            format!("{}/{}/{}", base_path, res.base_loc, font.font_file);
+                        // 预加载字体文件数据，记录该字体有嵌入文件
                         match self.read_file(&font_clone.font_file) {
                             Ok(font_data) if !font_data.is_empty() => {
-                                web_sys::console::log_1(&format!(
-                                    "[资源] 字体加载成功: id={}, path='{}', size={}bytes",
-                                    font.id, font_clone.font_file, font_data.len()
-                                ).into());
+                                web_sys::console::log_1(
+                                    &format!(
+                                        "[资源] 字体加载成功: id={}, path='{}', size={}bytes",
+                                        font.id,
+                                        font_clone.font_file,
+                                        font_data.len()
+                                    )
+                                    .into(),
+                                );
                                 self.font_files.insert(font.id.clone(), font_data);
                             }
                             Ok(_) => {
-                                web_sys::console::warn_1(&format!(
-                                    "[资源] 字体文件为空: id={}, path='{}'",
-                                    font.id, font_clone.font_file
-                                ).into());
+                                web_sys::console::warn_1(
+                                    &format!(
+                                        "[资源] 字体文件为空: id={}, path='{}'",
+                                        font.id, font_clone.font_file
+                                    )
+                                    .into(),
+                                );
                             }
                             Err(e) => {
-                                web_sys::console::warn_1(&format!(
-                                    "[资源] 字体文件读取失败: id={}, path='{}', err={}",
-                                    font.id, font_clone.font_file, e
-                                ).into());
+                                web_sys::console::warn_1(
+                                    &format!(
+                                        "[资源] 字体文件读取失败: id={}, path='{}', err={}",
+                                        font.id, font_clone.font_file, e
+                                    )
+                                    .into(),
+                                );
                             }
                         }
                     }
@@ -490,7 +522,8 @@ impl Parser {
             if let Some(medias) = &res.multi_medias {
                 for media in &medias.multi_media {
                     if media.media_type == "Image" {
-                        let img_path = format!("{}/{}/{}", base_path, res.base_loc, media.media_file);
+                        let img_path =
+                            format!("{}/{}/{}", base_path, res.base_loc, media.media_file);
                         self.images.insert(media.id.clone(), img_path.into_bytes());
                     }
                 }
@@ -518,7 +551,11 @@ impl Parser {
         // 处理 DrawParam 的 Relative 继承
         let dp_ids: Vec<String> = self.draw_params.keys().cloned().collect();
         for id in dp_ids {
-            let relative_id = self.draw_params.get(&id).map(|dp| dp.relative.clone()).unwrap_or_default();
+            let relative_id = self
+                .draw_params
+                .get(&id)
+                .map(|dp| dp.relative.clone())
+                .unwrap_or_default();
             if !relative_id.is_empty() {
                 if let Some(parent) = self.draw_params.get(&relative_id).cloned() {
                     let child = self.draw_params.get_mut(&id).unwrap();
@@ -549,10 +586,13 @@ impl Parser {
             self.fonts.len(), self.font_files.len(), self.images.len(), self.composite_units.len(), self.draw_params.len()
         ).into());
         for (id, font) in &self.fonts {
-            web_sys::console::log_1(&format!(
-                "[资源] font id={}, name='{}', family='{}'",
-                id, font.font_name, font.family_name
-            ).into());
+            web_sys::console::log_1(
+                &format!(
+                    "[资源] font id={}, name='{}', family='{}'",
+                    id, font.font_name, font.family_name
+                )
+                .into(),
+            );
         }
     }
 
@@ -565,7 +605,8 @@ impl Parser {
             // 是路径，尝试加载
             let img_path = String::from_utf8_lossy(data).to_string();
             if let Ok(img_data) = self.read_file(&img_path) {
-                self.images.insert(resource_id.to_string(), img_data.clone());
+                self.images
+                    .insert(resource_id.to_string(), img_data.clone());
                 return Some(img_data);
             }
         }
@@ -575,10 +616,14 @@ impl Parser {
         for file in &files_clone {
             let lower = file.to_lowercase();
             if lower.contains(&resource_id.to_lowercase()) {
-                if lower.ends_with(".png") || lower.ends_with(".jpg") || 
-                   lower.ends_with(".jpeg") || lower.ends_with(".gif") {
+                if lower.ends_with(".png")
+                    || lower.ends_with(".jpg")
+                    || lower.ends_with(".jpeg")
+                    || lower.ends_with(".gif")
+                {
                     if let Ok(img_data) = self.read_file(file) {
-                        self.images.insert(resource_id.to_string(), img_data.clone());
+                        self.images
+                            .insert(resource_id.to_string(), img_data.clone());
                         return Some(img_data);
                     }
                 }
@@ -596,13 +641,16 @@ pub fn parse_box(box_str: &str) -> (f64, f64) {
     let y = scanner.next_float(); // skip y
     let w = scanner.next_float().unwrap_or(0.0);
     let h = scanner.next_float().unwrap_or(0.0);
-    
+
     // 调试输出
-    web_sys::console::log_1(&format!(
-        "parse_box: input='{}', x={:?}, y={:?}, w={}, h={}",
-        box_str, x, y, w, h
-    ).into());
-    
+    web_sys::console::log_1(
+        &format!(
+            "parse_box: input='{}', x={:?}, y={:?}, w={}, h={}",
+            box_str, x, y, w, h
+        )
+        .into(),
+    );
+
     if w == 0.0 && h == 0.0 {
         return (210.0, 297.0);
     }
@@ -622,13 +670,17 @@ pub fn parse_boundary(boundary: &str) -> (f64, f64, f64, f64) {
 /// 解析颜色
 pub fn parse_color(value: &str) -> String {
     let mut scanner = NumberScanner::new(value);
-    if let (Some(r), Some(g), Some(b)) = (scanner.next_float(), scanner.next_float(), scanner.next_float()) {
+    if let (Some(r), Some(g), Some(b)) = (
+        scanner.next_float(),
+        scanner.next_float(),
+        scanner.next_float(),
+    ) {
         return format!("rgb({},{},{})", r as i32, g as i32, b as i32);
     }
     "#000".to_string()
 }
 
-/// 解析 CTM 变换矩阵
+/// 解析CTM变换矩阵
 pub fn parse_ctm(ctm_str: &str) -> Vec<f64> {
     let mut result = Vec::with_capacity(6);
     let mut scanner = NumberScanner::new(ctm_str);
@@ -644,7 +696,7 @@ pub fn parse_ctm(ctm_str: &str) -> Vec<f64> {
     result
 }
 
-/// 解析 DeltaX/DeltaY
+/// 解析DeltaX/DeltaY
 pub fn parse_deltas(delta_str: &str) -> Vec<f64> {
     let mut result = Vec::new();
     let mut scanner = TokenScanner::new(delta_str);
@@ -673,7 +725,10 @@ pub struct NumberScanner<'a> {
 
 impl<'a> NumberScanner<'a> {
     pub fn new(s: &'a str) -> Self {
-        NumberScanner { data: s.as_bytes(), pos: 0 }
+        NumberScanner {
+            data: s.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -694,17 +749,19 @@ impl<'a> NumberScanner<'a> {
         }
 
         let start = self.pos;
-        
+
         // 符号
-        if self.pos < self.data.len() && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+') {
+        if self.pos < self.data.len()
+            && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+')
+        {
             self.pos += 1;
         }
-        
+
         // 整数部分
         while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
             self.pos += 1;
         }
-        
+
         // 小数部分
         if self.pos < self.data.len() && self.data[self.pos] == b'.' {
             self.pos += 1;
@@ -712,11 +769,15 @@ impl<'a> NumberScanner<'a> {
                 self.pos += 1;
             }
         }
-        
+
         // 科学计数法
-        if self.pos < self.data.len() && (self.data[self.pos] == b'e' || self.data[self.pos] == b'E') {
+        if self.pos < self.data.len()
+            && (self.data[self.pos] == b'e' || self.data[self.pos] == b'E')
+        {
             self.pos += 1;
-            if self.pos < self.data.len() && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+') {
+            if self.pos < self.data.len()
+                && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+')
+            {
                 self.pos += 1;
             }
             while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
@@ -734,7 +795,7 @@ impl<'a> NumberScanner<'a> {
     }
 }
 
-/// Token 扫描器
+/// Token扫描器
 pub struct TokenScanner<'a> {
     data: &'a [u8],
     pos: usize,
@@ -742,7 +803,10 @@ pub struct TokenScanner<'a> {
 
 impl<'a> TokenScanner<'a> {
     pub fn new(s: &'a str) -> Self {
-        TokenScanner { data: s.as_bytes(), pos: 0 }
+        TokenScanner {
+            data: s.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -780,5 +844,3 @@ impl<'a> TokenScanner<'a> {
             .map(|s| s.to_string())
     }
 }
-
-

@@ -12,6 +12,12 @@ let allPagesData = [];
 const renderedPages = new Set();
 const INITIAL_PAGES = 3;
 const PRELOAD_THRESHOLD = 200;
+const MOCK_SEAL_BASE64 =
+  "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTIwIDEyMCI+PGNpcmNsZSBjeD0iNjAiIGN5PSI2MCIgcj0iNTIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2Q4MDAwMCIgc3Ryb2tlLXdpZHRoPSI2Ii8+PGNpcmNsZSBjeD0iNjAiIGN5PSI2MCIgcj0iMzIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2Q4MDAwMCIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtZGFzaGFycmF5PSI0IDQiLz48L3N2Zz4=";
+let sealPlacementActive = false;
+let sealCursorEl = null;
+let sealDataUrl = "";
+let previousBodyCursor = "";
 
 function getScale() {
   return BASE_SCALE * currentZoom;
@@ -62,6 +68,136 @@ function resetZoom() {
 
 function updateStatus(msg) {
   document.getElementById("status").textContent = msg;
+}
+
+function normalizeSealDataUrl(sealBase64, mimeType = "image/png") {
+  if (!sealBase64) return "";
+  const trimmed = sealBase64.trim();
+  if (trimmed.startsWith("data:")) return trimmed;
+  return `data:${mimeType};base64,${trimmed}`;
+}
+
+function stopSealPlacement() {
+  if (!sealPlacementActive) return;
+  sealPlacementActive = false;
+
+  document.removeEventListener("mousemove", handleSealMouseMove, true);
+  document.removeEventListener("click", handleSealPlacementClick, true);
+
+  if (sealCursorEl) {
+    sealCursorEl.remove();
+    sealCursorEl = null;
+  }
+
+  document.body.style.cursor = previousBodyCursor;
+  previousBodyCursor = "";
+
+  const btn = document.getElementById("sealPlaceBtn");
+  if (btn) btn.classList.remove("seal-mode-on");
+}
+
+function startSealPlacement(sealBase64, mimeType = "image/png") {
+  if (!allPagesData.length || !parser) {
+    alert("请先加载 OFD 文件。");
+    return;
+  }
+
+  stopSealPlacement();
+
+  sealDataUrl = normalizeSealDataUrl(sealBase64, mimeType);
+  if (!sealDataUrl) {
+    alert("印章数据无效。");
+    return;
+  }
+
+  sealPlacementActive = true;
+
+  sealCursorEl = document.createElement("img");
+  sealCursorEl.className = "seal-follow-cursor";
+  sealCursorEl.src = sealDataUrl;
+  sealCursorEl.alt = "seal-cursor";
+  document.body.appendChild(sealCursorEl);
+
+  previousBodyCursor = document.body.style.cursor || "";
+  document.body.style.cursor = "crosshair";
+
+  const btn = document.getElementById("sealPlaceBtn");
+  if (btn) btn.classList.add("seal-mode-on");
+
+  document.addEventListener("mousemove", handleSealMouseMove, true);
+  document.addEventListener("click", handleSealPlacementClick, true);
+}
+
+function handleSealMouseMove(e) {
+  if (!sealPlacementActive || !sealCursorEl) return;
+  sealCursorEl.style.left = `${e.clientX}px`;
+  sealCursorEl.style.top = `${e.clientY}px`;
+}
+
+function getPageDataByIndex(pageIndex) {
+  if (allPagesData[pageIndex]) return allPagesData[pageIndex];
+  if (!parser) return null;
+  try {
+    const pageData = parser.render_page_svg(pageIndex);
+    allPagesData[pageIndex] = pageData;
+    return pageData;
+  } catch (err) {
+    console.error("加载页面数据失败:", err);
+    return null;
+  }
+}
+
+function handleSealPlacementClick(e) {
+  if (!sealPlacementActive) return;
+  const target = e.target instanceof Element ? e.target : null;
+  if (target?.closest("#sealPlaceBtn")) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  const pageContainer = target?.closest(".page-container");
+  if (!pageContainer) {
+    alert("错误：点击位置不在 OFD 页面内。");
+    stopSealPlacement();
+    return;
+  }
+
+  const rect = pageContainer.getBoundingClientRect();
+  const localX = e.clientX - rect.left;
+  const localY = e.clientY - rect.top;
+
+  if (localX < 0 || localY < 0 || localX > rect.width || localY > rect.height) {
+    alert("错误：点击位置不在 OFD 页面范围内。");
+    stopSealPlacement();
+    return;
+  }
+
+  const pageIndex = Number.parseInt(pageContainer.dataset.pageIndex, 10);
+  if (Number.isNaN(pageIndex) || pageIndex < 0) {
+    alert("错误：无法识别页码。");
+    stopSealPlacement();
+    return;
+  }
+
+  const pageData = getPageDataByIndex(pageIndex);
+  if (!pageData || pageData.error || !pageData.width || !pageData.height) {
+    alert("错误：无法获取页面尺寸，落章失败。");
+    stopSealPlacement();
+    return;
+  }
+
+  const ofdX = (localX / rect.width) * pageData.width;
+  const ofdY = (localY / rect.height) * pageData.height;
+
+  alert(
+    `印章放置成功\n页码: ${pageIndex + 1}\nOFD坐标(mm): X=${ofdX.toFixed(2)}, Y=${ofdY.toFixed(2)}`,
+  );
+
+  stopSealPlacement();
+}
+
+function startSealPlacementWithMock() {
+  startSealPlacement(MOCK_SEAL_BASE64, "image/svg+xml");
 }
 
 function infoItem(label, value) {
@@ -174,10 +310,17 @@ async function loadOFDFonts() {
 }
 
 async function parseAndRender(file) {
-  updateStatus("⏳ 解析中...");
+  stopSealPlacement();
+
+  updateStatus("解析中...");
   const viewer = document.getElementById("viewer");
+  const sealBtn = document.getElementById("sealPlaceBtn");
+  if (sealBtn) {
+    sealBtn.style.display = "none";
+    sealBtn.classList.remove("seal-mode-on");
+  }
   viewer.innerHTML =
-    '<div class="empty-state loading"><p>⏳ 正在解析文档...</p></div>';
+    '<div class="empty-state loading"><p>正在解析文档...</p></div>';
 
   try {
     const totalStart = performance.now();
@@ -193,19 +336,21 @@ async function parseAndRender(file) {
     displayDocInfo(docInfo);
     displayPageList(currentPageCount);
 
-    updateStatus("⏳ 加载字体...");
+    updateStatus("加载字体...");
     await loadOFDFonts();
 
-    updateStatus("⏳ 渲染页面...");
+    updateStatus("渲染页面...");
     await renderAllPages();
 
     console.log(`[总耗时] ${(performance.now() - totalStart).toFixed(2)}ms`);
-    updateStatus(`✅ 已加载 ${currentPageCount} 页`);
+    updateStatus(`已加载 ${currentPageCount} 页`);
     document.getElementById("xmlBtn").style.display = "";
     document.getElementById("zoomControls").style.display = "";
+    if (sealBtn) sealBtn.style.display = "";
   } catch (err) {
-    updateStatus("❌ " + err.message);
-    viewer.innerHTML = `<div class="empty-state"><p>❌ 解析失败</p><p style="font-size:12px;">${err.message}</p></div>`;
+    updateStatus("错误: " + err.message);
+    viewer.innerHTML = `<div class="empty-state"><p>解析失败</p><p style="font-size:12px;">${err.message}</p></div>`;
+    if (sealBtn) sealBtn.style.display = "none";
     console.error(err);
   }
 }
@@ -658,10 +803,15 @@ window.zoomIn = zoomIn;
 window.zoomOut = zoomOut;
 window.resetZoom = resetZoom;
 window.setZoom = setZoom;
+window.startSealPlacement = startSealPlacement;
+window.startSealPlacementWithMock = startSealPlacementWithMock;
 
 // 按 Esc 关闭弹窗，Ctrl+/- 缩放
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hideXmlModal();
+  if (e.key === "Escape") {
+    hideXmlModal();
+    stopSealPlacement();
+  }
   // Ctrl++ 或 Ctrl+= 放大
   if ((e.ctrlKey || e.metaKey) && (e.key === "+" || e.key === "=")) {
     e.preventDefault();
