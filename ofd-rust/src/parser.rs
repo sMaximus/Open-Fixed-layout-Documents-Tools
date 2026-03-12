@@ -721,7 +721,7 @@ pub fn parse_deltas(delta_str: &str) -> Vec<f64> {
 pub struct NumberScanner<'a> {
     data: &'a [u8],
     pos: usize,
-}
+} 
 
 impl<'a> NumberScanner<'a> {
     pub fn new(s: &'a str) -> Self {
