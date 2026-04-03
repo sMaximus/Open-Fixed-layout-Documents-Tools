@@ -489,6 +489,8 @@ pub struct StampAnnot {
     pub page_ref: String,
     #[serde(rename = "@Boundary", default)]
     pub boundary: String,
+    #[serde(rename = "@Clip", default)]
+    pub clip: String,
 }
 
 /// Pattern 图案填充

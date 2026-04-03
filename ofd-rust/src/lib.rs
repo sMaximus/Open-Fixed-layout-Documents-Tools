@@ -1,21 +1,38 @@
 //! OFD Rust WASM 库
-//! 
+//!
 //! 用于解析和渲染 OFD (Open Fixed-layout Document) 文档
 
-mod types;
 mod page;
 mod parser;
 mod render;
+mod stamp;
 mod svg_render;
+mod types;
 
-use wasm_bindgen::prelude::*;
 use serde_json;
+use wasm_bindgen::prelude::*;
 
-pub use types::*;
 pub use page::*;
 pub use parser::*;
 pub use render::*;
 pub use svg_render::*;
+pub use types::*;
+
+pub(crate) fn debug_log(message: &str) {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(&message.into());
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = message;
+}
+
+pub(crate) fn debug_warn(message: &str) {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::warn_1(&message.into());
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = message;
+}
 
 /// WASM 导出的 OFD 解析器
 #[wasm_bindgen]
@@ -28,23 +45,34 @@ impl OFDParser {
     /// 创建解析器
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8]) -> Result<OFDParser, JsValue> {
-        let parser = Parser::new(data.to_vec())
-            .map_err(|e| JsValue::from_str(&e))?;
+        let parser = Parser::new(data.to_vec()).map_err(|e| JsValue::from_str(&e))?;
         Ok(OFDParser { parser })
     }
 
     /// 解析OFD文件
     pub fn parse(&mut self) -> Result<JsValue, JsValue> {
-        let result = self.parser.parse()
-            .map_err(|e| JsValue::from_str(&e))?;
-        
+        let result = self.parser.parse().map_err(|e| JsValue::from_str(&e))?;
+
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"files".into(), 
-            &serde_wasm_bindgen::to_value(&result.files).unwrap_or(JsValue::NULL))?;
-        js_sys::Reflect::set(&obj, &"pageCount".into(), &JsValue::from(result.page_count as u32))?;
-        js_sys::Reflect::set(&obj, &"error".into(), 
-            &result.error.map(|e| JsValue::from_str(&e)).unwrap_or(JsValue::NULL))?;
-        
+        js_sys::Reflect::set(
+            &obj,
+            &"files".into(),
+            &serde_wasm_bindgen::to_value(&result.files).unwrap_or(JsValue::NULL),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"pageCount".into(),
+            &JsValue::from(result.page_count as u32),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"error".into(),
+            &result
+                .error
+                .map(|e| JsValue::from_str(&e))
+                .unwrap_or(JsValue::NULL),
+        )?;
+
         Ok(obj.into())
     }
 
@@ -59,25 +87,36 @@ impl OFDParser {
         serde_wasm_bindgen::to_value(&serde_json::json!({
             "width": w,
             "height": h,
-        })).unwrap_or(JsValue::NULL)
+        }))
+        .unwrap_or(JsValue::NULL)
     }
 
     /// 渲染页面（Canvas 模式）
     pub fn render_page(&mut self, index: usize) -> JsValue {
         let result = self.parser.render_page(index);
-        
+
         let obj = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(&obj, &"pageIndex".into(), &JsValue::from(result.page_index as u32));
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &"pageIndex".into(),
+            &JsValue::from(result.page_index as u32),
+        );
         let _ = js_sys::Reflect::set(&obj, &"width".into(), &JsValue::from(result.width));
         let _ = js_sys::Reflect::set(&obj, &"height".into(), &JsValue::from(result.height));
-        let _ = js_sys::Reflect::set(&obj, &"canvasData".into(), 
-            &serde_wasm_bindgen::to_value(&result.canvas_data).unwrap_or(JsValue::NULL));
-        let _ = js_sys::Reflect::set(&obj, &"textLayer".into(), 
-            &serde_wasm_bindgen::to_value(&result.text_layer).unwrap_or(JsValue::NULL));
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &"canvasData".into(),
+            &serde_wasm_bindgen::to_value(&result.canvas_data).unwrap_or(JsValue::NULL),
+        );
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &"textLayer".into(),
+            &serde_wasm_bindgen::to_value(&result.text_layer).unwrap_or(JsValue::NULL),
+        );
         if let Some(err) = result.error {
             let _ = js_sys::Reflect::set(&obj, &"error".into(), &JsValue::from_str(&err));
         }
-        
+
         obj.into()
     }
 
@@ -122,7 +161,8 @@ impl OFDParser {
                 "author": info.author,
                 "creationDate": info.creation_date,
                 "creator": info.creator,
-            })).unwrap_or(JsValue::NULL)
+            }))
+            .unwrap_or(JsValue::NULL)
         } else {
             JsValue::NULL
         }

@@ -453,6 +453,18 @@ async function renderPageContent(pageIndex) {
   container.style.width = `${pxWidth}px`;
   container.style.height = `${pxHeight}px`;
 
+  if (page.stampDebug && page.stampDebug.length > 0) {
+    console.groupCollapsed(
+      `[StampDebug] 页面${pageIndex + 1}: ${page.stampDebug.length} 条`,
+    );
+    page.stampDebug.forEach((entry, idx) => {
+      console.log(`[StampDebug] #${idx + 1}`, entry);
+    });
+    console.groupEnd();
+  } else {
+    console.log(`[StampDebug] 页面${pageIndex + 1}: 无签章调试信息`);
+  }
+
   // SVG 层
   if (page.svg) {
     const svgContainer = document.createElement("div");

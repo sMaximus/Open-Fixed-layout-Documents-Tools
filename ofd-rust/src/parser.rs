@@ -92,13 +92,10 @@ impl Parser {
         };
 
         if self.files.len() > MAX_FILES_IN_PARSE_RESULT {
-            web_sys::console::log_1(
-                &format!(
-                    "[parse] too many files ({}), skip files in parse result; use get_files() when needed",
-                    self.files.len()
-                )
-                .into(),
-            );
+            crate::debug_log(&format!(
+                "[parse] too many files ({}), skip files in parse result; use get_files() when needed",
+                self.files.len()
+            ));
         }
 
         // Parse OFD.xml
@@ -144,14 +141,11 @@ impl Parser {
                     if let Some(ref doc) = self.document {
                         result.page_count = doc.pages.page.len();
                         // 调试输出
-                        web_sys::console::log_1(
-                            &format!(
-                                "Document parsed: page_count={}, physical_box='{}'",
-                                doc.pages.page.len(),
-                                doc.common_data.page_area.physical_box
-                            )
-                            .into(),
-                        );
+                        crate::debug_log(&format!(
+                            "Document parsed: page_count={}, physical_box='{}'",
+                            doc.pages.page.len(),
+                            doc.common_data.page_area.physical_box
+                        ));
                     }
                     result.document = self.document.clone();
                 } else {
@@ -483,34 +477,25 @@ impl Parser {
                         // 预加载字体文件数据，记录该字体有嵌入文件
                         match self.read_file(&font_clone.font_file) {
                             Ok(font_data) if !font_data.is_empty() => {
-                                web_sys::console::log_1(
-                                    &format!(
-                                        "[资源] 字体加载成功: id={}, path='{}', size={}bytes",
-                                        font.id,
-                                        font_clone.font_file,
-                                        font_data.len()
-                                    )
-                                    .into(),
-                                );
+                                crate::debug_log(&format!(
+                                    "[资源] 字体加载成功: id={}, path='{}', size={}bytes",
+                                    font.id,
+                                    font_clone.font_file,
+                                    font_data.len()
+                                ));
                                 self.font_files.insert(font.id.clone(), font_data);
                             }
                             Ok(_) => {
-                                web_sys::console::warn_1(
-                                    &format!(
-                                        "[资源] 字体文件为空: id={}, path='{}'",
-                                        font.id, font_clone.font_file
-                                    )
-                                    .into(),
-                                );
+                                crate::debug_warn(&format!(
+                                    "[资源] 字体文件为空: id={}, path='{}'",
+                                    font.id, font_clone.font_file
+                                ));
                             }
                             Err(e) => {
-                                web_sys::console::warn_1(
-                                    &format!(
-                                        "[资源] 字体文件读取失败: id={}, path='{}', err={}",
-                                        font.id, font_clone.font_file, e
-                                    )
-                                    .into(),
-                                );
+                                crate::debug_warn(&format!(
+                                    "[资源] 字体文件读取失败: id={}, path='{}', err={}",
+                                    font.id, font_clone.font_file, e
+                                ));
                             }
                         }
                     }
@@ -581,18 +566,15 @@ impl Parser {
         let _ = doc_base;
 
         // 调试：输出已加载的资源信息
-        web_sys::console::log_1(&format!(
+        crate::debug_log(&format!(
             "[资源] load_resources 完成: fonts={}, font_files={}, images={}, composites={}, draw_params={}",
             self.fonts.len(), self.font_files.len(), self.images.len(), self.composite_units.len(), self.draw_params.len()
-        ).into());
+        ));
         for (id, font) in &self.fonts {
-            web_sys::console::log_1(
-                &format!(
-                    "[资源] font id={}, name='{}', family='{}'",
-                    id, font.font_name, font.family_name
-                )
-                .into(),
-            );
+            crate::debug_log(&format!(
+                "[资源] font id={}, name='{}', family='{}'",
+                id, font.font_name, font.family_name
+            ));
         }
     }
 
@@ -643,13 +625,10 @@ pub fn parse_box(box_str: &str) -> (f64, f64) {
     let h = scanner.next_float().unwrap_or(0.0);
 
     // 调试输出
-    web_sys::console::log_1(
-        &format!(
-            "parse_box: input='{}', x={:?}, y={:?}, w={}, h={}",
-            box_str, x, y, w, h
-        )
-        .into(),
-    );
+    crate::debug_log(&format!(
+        "parse_box: input='{}', x={:?}, y={:?}, w={}, h={}",
+        box_str, x, y, w, h
+    ));
 
     if w == 0.0 && h == 0.0 {
         return (210.0, 297.0);
@@ -669,6 +648,10 @@ pub fn parse_boundary(boundary: &str) -> (f64, f64, f64, f64) {
 
 /// 解析颜色
 pub fn parse_color(value: &str) -> String {
+    if let Some((r, g, b)) = parse_hex_color(value) {
+        return format!("rgb({},{},{})", r, g, b);
+    }
+
     let mut scanner = NumberScanner::new(value);
     if let (Some(r), Some(g), Some(b)) = (
         scanner.next_float(),
@@ -678,6 +661,58 @@ pub fn parse_color(value: &str) -> String {
         return format!("rgb({},{},{})", r as i32, g as i32, b as i32);
     }
     "#000".to_string()
+}
+
+fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    if let Some(hex) = compact.strip_prefix('#') {
+        if let Some(rgb) = parse_hex_rgb(hex) {
+            return Some(rgb);
+        }
+    }
+
+    let tokens: Vec<&str> = trimmed
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .filter(|token| !token.is_empty())
+        .collect();
+
+    if tokens.len() >= 3 {
+        let mut rgb = [0u8; 3];
+        for (idx, token) in tokens.iter().take(3).enumerate() {
+            let hex = token.strip_prefix('#').unwrap_or(token);
+            if hex.len() > 2 || hex.is_empty() || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            rgb[idx] = u8::from_str_radix(hex, 16).ok()?;
+        }
+        return Some((rgb[0], rgb[1], rgb[2]));
+    }
+
+    None
+}
+
+fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+    match hex.len() {
+        3 if hex.chars().all(|c| c.is_ascii_hexdigit()) => {
+            let chars: Vec<char> = hex.chars().collect();
+            let expanded = format!(
+                "{}{}{}{}{}{}",
+                chars[0], chars[0], chars[1], chars[1], chars[2], chars[2]
+            );
+            parse_hex_rgb(&expanded)
+        }
+        6 if hex.chars().all(|c| c.is_ascii_hexdigit()) => Some((
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+        )),
+        _ => None,
+    }
 }
 
 /// 解析CTM变换矩阵
@@ -721,7 +756,7 @@ pub fn parse_deltas(delta_str: &str) -> Vec<f64> {
 pub struct NumberScanner<'a> {
     data: &'a [u8],
     pos: usize,
-} 
+}
 
 impl<'a> NumberScanner<'a> {
     pub fn new(s: &'a str) -> Self {

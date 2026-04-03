@@ -91,6 +91,8 @@ pub struct SVGRenderResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_overlay: Option<Vec<TextOverlayItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stamp_debug: Option<Vec<StampDebugInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub html_texts: Option<Vec<HtmlTextItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -277,10 +279,16 @@ impl Parser {
             height,
         );
 
+        let stamps = self.collect_page_stamps(page_index);
+        if !stamps.is_empty() {
+            result.stamp_debug = Some(stamps.iter().map(|stamp| stamp.debug_info()).collect());
+        }
+
         // 印章（含 ASN.1 提取图片）先渲染，确保后续文字层在其上方
         self.load_stamps_svg(
             &mut svg_parts,
             &mut text_overlay,
+            &stamps,
             scale,
             page_index,
             width,
@@ -290,29 +298,23 @@ impl Parser {
         // 获取页面层
         let layers = self.get_page_layers(&page);
 
-        web_sys::console::log_1(
-            &format!(
-                "[SVG渲染] page_index={}, templates={}, layers={}, page_xml_len={}",
-                page_index,
-                page.template.len(),
-                layers.len(),
-                page_xml.len()
-            )
-            .into(),
-        );
+        crate::debug_log(&format!(
+            "[SVG渲染] page_index={}, templates={}, layers={}, page_xml_len={}",
+            page_index,
+            page.template.len(),
+            layers.len(),
+            page_xml.len()
+        ));
 
         for (li, layer) in layers.iter().enumerate() {
             let path_count = layer.path_objects().count();
             let img_count = layer.image_objects().count();
             let text_count = layer.text_objects().count();
             let composite_count = layer.composite_objects().count();
-            web_sys::console::log_1(
-                &format!(
-                    "[SVG] layer[{}]: paths={}, images={}, texts={}, composites={}",
-                    li, path_count, img_count, text_count, composite_count
-                )
-                .into(),
-            );
+            crate::debug_log(&format!(
+                "[SVG] layer[{}]: paths={}, images={}, texts={}, composites={}",
+                li, path_count, img_count, text_count, composite_count
+            ));
 
             // Resolve layer-level DrawParam
             let layer_dp = if !layer.draw_param.is_empty() {
@@ -1400,13 +1402,10 @@ impl Parser {
                 }
             }
             if !cg_glyph_map.is_empty() {
-                web_sys::console::log_1(
-                    &format!(
-                        "[CGTransform] TextObject id={}, mappings={:?}",
-                        text.id, cg_glyph_map
-                    )
-                    .into(),
-                );
+                crate::debug_log(&format!(
+                    "[CGTransform] TextObject id={}, mappings={:?}",
+                    text.id, cg_glyph_map
+                ));
             }
         }
 
@@ -1428,18 +1427,15 @@ impl Parser {
 
             if !delta_x.is_empty() || !delta_y.is_empty() {
                 let preview: String = content.chars().take(10).collect();
-                web_sys::console::log_1(
-                    &format!(
-                        "[TextCode] chars={}, deltaX_count={}, deltaY_count={}, X={}, Y={}, text='{}'",
-                        chars.len(),
-                        delta_x.len(),
-                        delta_y.len(),
-                        tc.x,
-                        tc.y,
-                        preview
-                    )
-                    .into(),
-                );
+                crate::debug_log(&format!(
+                    "[TextCode] chars={}, deltaX_count={}, deltaY_count={}, X={}, Y={}, text='{}'",
+                    chars.len(),
+                    delta_x.len(),
+                    delta_y.len(),
+                    tc.x,
+                    tc.y,
+                    preview
+                ));
             }
 
             // mm 空间累加位置（CTM 缩放已吸收，坐标需要同步缩放）
@@ -1523,10 +1519,10 @@ impl Parser {
                             .get(font_id)
                             .map(|f| format!("name='{}' family='{}'", f.font_name, f.family_name))
                             .unwrap_or_default();
-                        web_sys::console::log_1(&format!(
+                        crate::debug_log(&format!(
                             "[文字渲染] TextObject id={}, font_id={}, {}, has_font_file={}, glyph_path={}, cg_glyph_id={:?}, char='{}', font_size_px={:.2}",
                             text.id, font_id, font_info, has_font_file, glyph_path.is_some(), cg_glyph_id, ch, font_size_px
-                        ).into());
+                        ));
                     }
 
                     if let Some((path_d, _advance)) = glyph_path {
@@ -1714,13 +1710,10 @@ impl Parser {
         let unit = match self.composite_units.get(&comp.resource_id) {
             Some(u) => u.clone(),
             None => {
-                web_sys::console::log_1(
-                    &format!(
-                        "[CompositeObject] unit not found: ResourceID={}",
-                        comp.resource_id
-                    )
-                    .into(),
-                );
+                crate::debug_log(&format!(
+                    "[CompositeObject] unit not found: ResourceID={}",
+                    comp.resource_id
+                ));
                 return;
             }
         };
@@ -1749,10 +1742,10 @@ impl Parser {
                 true
             };
             if declared_seems_wrong || ratio_off {
-                web_sys::console::log_1(&format!(
+                crate::debug_log(&format!(
                     "[CompositeObject] 使用实际包围盒: declared={}x{}, actual={:.2}x{:.2}, boundary={}x{}",
                     unit.width, unit.height, actual_w, actual_h, cw, ch
-                ).into());
+                ));
                 (actual_w, actual_h)
             } else {
                 (unit.width, unit.height)
@@ -1986,10 +1979,10 @@ impl Parser {
             for annot in &page_annot.annots {
                 let (ax, ay, _, _) = parse_boundary(&annot.appearance.boundary);
 
-                web_sys::console::log_1(&format!(
+                crate::debug_log(&format!(
                     "[Annot] id={}, type='{}', subtype='{}', appearance_boundary='{}', ax={:.4}, ay={:.4}",
                     annot.id, annot.annot_type, annot.subtype, annot.appearance.boundary, ax, ay
-                ).into());
+                ));
 
                 // 用 <g> 包裹注释，偏移到注释位置
                 svg_parts.push(format!(
@@ -2052,196 +2045,65 @@ impl Parser {
         &mut self,
         svg_parts: &mut Vec<String>,
         text_overlay: &mut Vec<TextOverlayItem>,
+        stamps: &[crate::stamp::ResolvedStamp],
         scale: f64,
         page_index: usize,
         _page_w: f64,
         _page_h: f64,
     ) {
-        let doc = match self.document.as_ref() {
-            Some(d) => d.clone(),
-            None => return,
-        };
-        if page_index >= doc.pages.page.len() {
-            return;
-        }
-        let page_id = doc.pages.page[page_index].id.clone();
-
-        // 收集印章注释
-        struct StampAnnotInfo {
-            annot: StampAnnot,
-            sig_dir: String,
-        }
-        let mut all_annots: Vec<StampAnnotInfo> = Vec::new();
-
-        let files_clone: Vec<String> = self.files.clone();
-        for file in &files_clone {
-            let lower = file.to_lowercase();
-            if !lower.ends_with("signatures.xml") {
-                continue;
-            }
-
-            let data = match self.read_file(file) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            let xml_str = Self::remove_namespace_prefix(&String::from_utf8_lossy(&data));
-            let sigs: Signatures = match quick_xml::de::from_str(&xml_str) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
-            let base_path = std::path::Path::new(file)
-                .parent()
-                .and_then(|p| p.to_str())
-                .unwrap_or("")
-                .to_string();
-
-            for sig in &sigs.signature {
-                let sig_loc = sig.base_loc.trim_start_matches('/');
-                let candidates = vec![format!("{}/{}", base_path, sig_loc), sig_loc.to_string()];
-
-                let mut sig_data = None;
-                let mut sig_path = String::new();
-                for candidate in &candidates {
-                    if let Ok(d) = self.read_file(candidate) {
-                        sig_data = Some(d);
-                        sig_path = candidate.to_string();
-                        break;
-                    }
-                }
-
-                let sig_data = match sig_data {
-                    Some(d) => d,
-                    None => continue,
-                };
-
-                let sig_dir = std::path::Path::new(&sig_path)
-                    .parent()
-                    .and_then(|p| p.to_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                let sig_xml = Self::remove_namespace_prefix(&String::from_utf8_lossy(&sig_data));
-                let sig_parsed: SignatureXML = match quick_xml::de::from_str(&sig_xml) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        // 尝试正则提取 StampAnnot
-                        let re = regex::Regex::new(r#"(?i)<(?:\w+:)?StampAnnot[^>]*PageRef\s*=\s*"([^"]*)"[^>]*Boundary\s*=\s*"([^"]*)"[^/>]*/?>"#).ok();
-                        let re2 = regex::Regex::new(r#"(?i)<(?:\w+:)?StampAnnot[^>]*Boundary\s*=\s*"([^"]*)"[^>]*PageRef\s*=\s*"([^"]*)"[^/>]*/?>"#).ok();
-                        if let Some(re) = re {
-                            for cap in re.captures_iter(&sig_xml) {
-                                all_annots.push(StampAnnotInfo {
-                                    annot: StampAnnot {
-                                        page_ref: cap[1].to_string(),
-                                        boundary: cap[2].to_string(),
-                                        ..Default::default()
-                                    },
-                                    sig_dir: sig_dir.clone(),
-                                });
-                            }
-                        }
-                        if let Some(re2) = re2 {
-                            for cap in re2.captures_iter(&sig_xml) {
-                                all_annots.push(StampAnnotInfo {
-                                    annot: StampAnnot {
-                                        page_ref: cap[2].to_string(),
-                                        boundary: cap[1].to_string(),
-                                        ..Default::default()
-                                    },
-                                    sig_dir: sig_dir.clone(),
-                                });
-                            }
-                        }
-                        continue;
-                    }
-                };
-
-                for annot in &sig_parsed.signed_info.stamp_annot {
-                    all_annots.push(StampAnnotInfo {
-                        annot: annot.clone(),
-                        sig_dir: sig_dir.clone(),
-                    });
-                }
-            }
-        }
-
-        // 匹配当前页面的印章
-        for item in &all_annots {
-            if item.annot.page_ref != page_id {
-                continue;
-            }
-
-            let (x, y, w, h) = parse_boundary(&item.annot.boundary);
-            if w == 0.0 || h == 0.0 {
-                continue;
-            }
-
-            // 尝试加载印章图片
-            if let Some(seal_img) = self.find_seal_image(&item.sig_dir) {
-                let mime_type = if seal_img.len() > 2 && seal_img[0] == 0xFF && seal_img[1] == 0xD8
-                {
-                    "image/jpeg"
-                } else {
-                    "image/png"
-                };
-                let data_url = format!("data:{};base64,{}", mime_type, BASE64.encode(&seal_img));
-                svg_parts.push(format!(
+        crate::debug_log(&format!(
+            "[SVGStamp] page_index={}, emitting {} stamp node(s)",
+            page_index,
+            stamps.len()
+        ));
+        for (stamp_index, stamp) in stamps.iter().enumerate() {
+            if let Some(data_url) = &stamp.image_data_url {
+                let image = format!(
                     r#"<image href="{}" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="none"/>"#,
-                    data_url, x * scale, y * scale, w * scale, h * scale
-                ));
+                    data_url,
+                    stamp.full_rect.x * scale,
+                    stamp.full_rect.y * scale,
+                    stamp.full_rect.width * scale,
+                    stamp.full_rect.height * scale
+                );
+
+                if stamp.has_clip {
+                    let clip_id = if stamp.id.is_empty() {
+                        format!("stamp_clip_{}_{}", page_index, stamp_index)
+                    } else {
+                        format!("stamp_clip_{}_{}", page_index, stamp.id)
+                    };
+                    svg_parts.push(format!(
+                        r#"<clipPath id="{}"><rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}"/></clipPath>"#,
+                        clip_id,
+                        stamp.visible_rect.x * scale,
+                        stamp.visible_rect.y * scale,
+                        stamp.visible_rect.width * scale,
+                        stamp.visible_rect.height * scale
+                    ));
+                    svg_parts.push(format!(r#"<g clip-path="url(#{})">{}</g>"#, clip_id, image));
+                } else {
+                    svg_parts.push(image);
+                }
             } else {
-                // 占位框
+                crate::debug_warn(&format!(
+                    "[SVGStamp] annot_id={}, page_ref={} has no seal image; using placeholder",
+                    stamp.id, stamp.page_ref
+                ));
                 text_overlay.push(TextOverlayItem {
                     text: "[电子签章]".to_string(),
-                    x: x * scale,
-                    y: y * scale,
-                    width: w * scale,
-                    height: h * scale,
+                    x: stamp.visible_rect.x * scale,
+                    y: stamp.visible_rect.y * scale,
+                    width: stamp.visible_rect.width * scale,
+                    height: stamp.visible_rect.height * scale,
                 });
             }
         }
     }
-
-    /// 查找印章图片文件
-    fn find_seal_image(&mut self, sig_dir: &str) -> Option<Vec<u8>> {
-        let candidates = vec![
-            format!("{}/Seal.esl", sig_dir),
-            format!("{}/seal.esl", sig_dir),
-            format!("{}/Seal.png", sig_dir),
-            format!("{}/seal.png", sig_dir),
-            format!("{}/SignedValue.dat", sig_dir),
-        ];
-
-        for candidate in &candidates {
-            if let Ok(data) = self.read_file(candidate) {
-                // 尝试提取图片
-                if let Some(img) = extract_image_from_binary(&data) {
-                    return Some(img);
-                }
-            }
-        }
-
-        // 扫描目录下的图片文件
-        let sig_dir_lower = sig_dir.to_lowercase();
-        let files_clone: Vec<String> = self.files.clone();
-        for file in &files_clone {
-            let lower = file.to_lowercase();
-            if (lower.starts_with(&sig_dir_lower) || lower.contains(sig_dir))
-                && (lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg"))
-            {
-                if let Ok(data) = self.read_file(file) {
-                    return Some(data);
-                }
-            }
-        }
-
-        None
-    }
 }
 
 /// 从二进制数据中提取图片（PNG/JPEG）
-fn extract_image_from_binary(data: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn extract_image_from_binary(data: &[u8]) -> Option<Vec<u8>> {
     if let Some(img) = extract_image_without_asn1(data) {
         return Some(img);
     }

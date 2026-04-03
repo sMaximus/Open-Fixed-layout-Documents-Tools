@@ -1,10 +1,10 @@
 //! 页面渲染模块
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
-use crate::parser::*;
 use crate::page::*;
+use crate::parser::*;
 
 /// 页面渲染结果
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -15,6 +15,8 @@ pub struct PageRenderResult {
     pub height: f64,
     pub canvas_data: CanvasRenderData,
     pub text_layer: Vec<TextItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stamp_debug: Option<Vec<StampDebugInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -45,7 +47,6 @@ pub struct PathData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<PatternData>,
 }
-
 
 /// 渐变数据
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -98,6 +99,24 @@ pub struct DebugInfo {
     pub text_debug: Option<Vec<String>>,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StampDebugInfo {
+    pub annot_id: String,
+    pub page_ref: String,
+    pub boundary: String,
+    pub clip: String,
+    pub sig_dir: String,
+    pub seal_found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seal_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    pub has_clip: bool,
+    pub full_boundary: String,
+    pub visible_boundary: String,
+    pub source_view_box: String,
+}
 
 /// 图片数据
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -134,7 +153,6 @@ pub struct TextItem {
     pub line_width: f64,
     pub fill: bool,
 }
-
 
 /// 字体信息
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -193,15 +211,15 @@ impl Parser {
 
         // 获取页面尺寸
         let (width, height) = self.get_page_size_from_page(&page);
-        
+
         // 调试：输出页面尺寸信息
-        web_sys::console::log_1(&format!(
+        crate::debug_log(&format!(
             "Page size: page.area.physical_box='{}', doc.page_area.physical_box='{}', result=({}, {})",
             page.area.physical_box,
             self.document.as_ref().map(|d| d.common_data.page_area.physical_box.as_str()).unwrap_or("N/A"),
             width, height
-        ).into());
-        
+        ));
+
         let scale = 3.78; // mm to px
         result.width = width * scale;
         result.height = height * scale;
@@ -212,6 +230,11 @@ impl Parser {
         // 提取渲染数据
         let scale = 3.78; // mm to px
         self.extract_render_data(&mut result, &page, scale);
+        let stamps = self.collect_page_stamps(page_index);
+        if !stamps.is_empty() {
+            result.stamp_debug = Some(stamps.iter().map(|stamp| stamp.debug_info()).collect());
+        }
+        self.extract_stamp_images(&mut result, &stamps, scale);
 
         result
     }
@@ -236,7 +259,6 @@ impl Parser {
         // 默认 A4 尺寸
         (210.0, 297.0)
     }
-
 
     fn extract_render_data(&mut self, result: &mut PageRenderResult, page: &Page, scale: f64) {
         // 合并多种可能的 Content 来源
@@ -266,15 +288,28 @@ impl Parser {
         }
     }
 
-    fn extract_composite_object(&mut self, result: &mut PageRenderResult, comp: &CompositeObject, scale: f64) {
+    fn extract_composite_object(
+        &mut self,
+        result: &mut PageRenderResult,
+        comp: &CompositeObject,
+        scale: f64,
+    ) {
         let unit = match self.composite_units.get(&comp.resource_id) {
             Some(u) => u.clone(),
             None => return,
         };
 
         let (cx, cy, cw, ch) = parse_boundary(&comp.boundary);
-        let sx = if unit.width > 0.0 { cw / unit.width } else { 1.0 };
-        let sy = if unit.height > 0.0 { ch / unit.height } else { 1.0 };
+        let sx = if unit.width > 0.0 {
+            cw / unit.width
+        } else {
+            1.0
+        };
+        let sy = if unit.height > 0.0 {
+            ch / unit.height
+        } else {
+            1.0
+        };
 
         let page_block = match &unit.content.page_block {
             Some(pb) => pb,
@@ -287,19 +322,22 @@ impl Parser {
                     // 调整 boundary 坐标
                     let mut adjusted = path_obj.clone();
                     let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
-                    adjusted.boundary = format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                    adjusted.boundary =
+                        format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
                     self.extract_path(result, &adjusted, scale, result.width, result.height);
                 }
                 LayerObject::ImageObject(img) => {
                     let mut adjusted = img.clone();
                     let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
-                    adjusted.boundary = format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                    adjusted.boundary =
+                        format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
                     self.extract_image(result, &adjusted, scale);
                 }
                 LayerObject::TextObject(text) => {
                     let mut adjusted = text.clone();
                     let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
-                    adjusted.boundary = format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                    adjusted.boundary =
+                        format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
                     // 缩放字体大小
                     adjusted.size *= sy;
                     self.extract_text(result, &adjusted, scale);
@@ -339,9 +377,12 @@ impl Parser {
                 let e = if ctm.len() > 4 { ctm[4] * scale } else { 0.0 };
                 let f = if ctm.len() > 5 { ctm[5] * scale } else { 0.0 };
                 img_data_out.ctm = Some(vec![
-                    ctm[0] * scale, ctm[1] * scale,
-                    ctm[2] * scale, ctm[3] * scale,
-                    e, f,
+                    ctm[0] * scale,
+                    ctm[1] * scale,
+                    ctm[2] * scale,
+                    ctm[3] * scale,
+                    e,
+                    f,
                 ]);
             }
         }
@@ -349,8 +390,48 @@ impl Parser {
         result.canvas_data.images.push(img_data_out);
     }
 
+    fn extract_stamp_images(
+        &mut self,
+        result: &mut PageRenderResult,
+        stamps: &[crate::stamp::ResolvedStamp],
+        scale: f64,
+    ) {
+        crate::debug_log(&format!(
+            "[CanvasStamp] emitting {} stamp image(s)",
+            stamps.len()
+        ));
+        for stamp in stamps {
+            let data_url = match stamp.canvas_data_url() {
+                Some(data_url) => data_url,
+                None => {
+                    crate::debug_warn(&format!(
+                        "[CanvasStamp] annot_id={}, page_ref={} has no drawable image",
+                        stamp.id, stamp.page_ref
+                    ));
+                    continue;
+                }
+            };
 
-    fn extract_path(&mut self, result: &mut PageRenderResult, path_obj: &PathObject, scale: f64, page_width: f64, page_height: f64) {
+            result.canvas_data.images.push(ImageData {
+                data_url,
+                x: stamp.visible_rect.x * scale,
+                y: stamp.visible_rect.y * scale,
+                width: stamp.visible_rect.width * scale,
+                height: stamp.visible_rect.height * scale,
+                ctm: None,
+                is_seal: Some(true),
+            });
+        }
+    }
+
+    fn extract_path(
+        &mut self,
+        result: &mut PageRenderResult,
+        path_obj: &PathObject,
+        scale: f64,
+        page_width: f64,
+        page_height: f64,
+    ) {
         if path_obj.abbreviated_data.is_empty() {
             return;
         }
@@ -426,7 +507,15 @@ impl Parser {
         }
 
         result.canvas_data.paths.push(PathData {
-            commands: convert_ofd_path_to_canvas(&path_obj.abbreviated_data, scale, bx, by, &ctm, page_width * scale, page_height * scale),
+            commands: convert_ofd_path_to_canvas(
+                &path_obj.abbreviated_data,
+                scale,
+                bx,
+                by,
+                &ctm,
+                page_width * scale,
+                page_height * scale,
+            ),
             fill_color,
             stroke_color,
             line_width: line_width * scale,
@@ -437,12 +526,15 @@ impl Parser {
         });
     }
 
-
     pub(crate) fn parse_axial_shd(&self, shd: &AxialShd, ctm: &[f64], _scale: f64) -> GradientData {
-        let start_parts: Vec<f64> = shd.start_point.split_whitespace()
+        let start_parts: Vec<f64> = shd
+            .start_point
+            .split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
-        let end_parts: Vec<f64> = shd.end_point.split_whitespace()
+        let end_parts: Vec<f64> = shd
+            .end_point
+            .split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
 
@@ -467,26 +559,41 @@ impl Parser {
             y1 = ox1 * ctm[1] + oy1 * ctm[3] + ctm[5];
         }
 
-        let stops: Vec<GradientStop> = shd.segment.iter().map(|seg| {
-            GradientStop {
+        let stops: Vec<GradientStop> = shd
+            .segment
+            .iter()
+            .map(|seg| GradientStop {
                 position: seg.position,
                 color: parse_color(&seg.color.value),
-            }
-        }).collect();
+            })
+            .collect();
 
         GradientData {
             gradient_type: "linear".to_string(),
-            x0, y0, x1, y1,
-            r0: None, r1: None,
+            x0,
+            y0,
+            x1,
+            y1,
+            r0: None,
+            r1: None,
             stops,
         }
     }
 
-    pub(crate) fn parse_radial_shd(&self, shd: &RadialShd, ctm: &[f64], _scale: f64) -> GradientData {
-        let start_parts: Vec<f64> = shd.start_point.split_whitespace()
+    pub(crate) fn parse_radial_shd(
+        &self,
+        shd: &RadialShd,
+        ctm: &[f64],
+        _scale: f64,
+    ) -> GradientData {
+        let start_parts: Vec<f64> = shd
+            .start_point
+            .split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
-        let end_parts: Vec<f64> = shd.end_point.split_whitespace()
+        let end_parts: Vec<f64> = shd
+            .end_point
+            .split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
 
@@ -510,16 +617,21 @@ impl Parser {
             y1 = ox1 * ctm[1] + oy1 * ctm[3] + ctm[5];
         }
 
-        let stops: Vec<GradientStop> = shd.segment.iter().map(|seg| {
-            GradientStop {
+        let stops: Vec<GradientStop> = shd
+            .segment
+            .iter()
+            .map(|seg| GradientStop {
                 position: seg.position,
                 color: parse_color(&seg.color.value),
-            }
-        }).collect();
+            })
+            .collect();
 
         GradientData {
             gradient_type: "radial".to_string(),
-            x0, y0, x1, y1,
+            x0,
+            y0,
+            x1,
+            y1,
             r0: Some(shd.start_radius),
             r1: Some(shd.end_radius),
             stops,
@@ -562,11 +674,12 @@ impl Parser {
                     }
                 }
 
-                let mime_type = if img_bytes.len() > 2 && img_bytes[0] == 0xFF && img_bytes[1] == 0xD8 {
-                    "image/jpeg"
-                } else {
-                    "image/png"
-                };
+                let mime_type =
+                    if img_bytes.len() > 2 && img_bytes[0] == 0xFF && img_bytes[1] == 0xD8 {
+                        "image/jpeg"
+                    } else {
+                        "image/png"
+                    };
 
                 // Pattern 内部坐标保持 mm 单位，前端会处理缩放
                 pattern_data.cell_images.push(ImageData {
@@ -617,7 +730,15 @@ impl Parser {
 
             // Pattern 内部路径不需要检查页面边界
             pattern_data.cell_paths.push(PathData {
-                commands: convert_ofd_path_to_canvas(&path_obj.abbreviated_data, 1.0, bx, by, &ctm, 0.0, 0.0),
+                commands: convert_ofd_path_to_canvas(
+                    &path_obj.abbreviated_data,
+                    1.0,
+                    bx,
+                    by,
+                    &ctm,
+                    0.0,
+                    0.0,
+                ),
                 fill_color,
                 stroke_color,
                 line_width,
@@ -667,12 +788,16 @@ impl Parser {
         let font_size = text.size * scale;
 
         // 处理颜色
-        let fill_color = text.fill_color.as_ref()
+        let fill_color = text
+            .fill_color
+            .as_ref()
             .filter(|c| !c.value.is_empty())
             .map(|c| parse_color(&c.value))
             .unwrap_or_else(|| "#000".to_string());
 
-        let stroke_color = text.stroke_color.as_ref()
+        let stroke_color = text
+            .stroke_color
+            .as_ref()
             .filter(|c| !c.value.is_empty())
             .map(|c| parse_color(&c.value));
 
@@ -692,8 +817,12 @@ impl Parser {
         // 解析 CTM
         let ctm = if !text.ctm.is_empty() {
             let mut c = parse_ctm(&text.ctm);
-            if c.len() > 4 { c[4] *= scale; }
-            if c.len() > 5 { c[5] *= scale; }
+            if c.len() > 4 {
+                c[4] *= scale;
+            }
+            if c.len() > 5 {
+                c[5] *= scale;
+            }
             if !c.is_empty() && c[0] > 0.0 && line_width > 0.0 {
                 line_width *= c[0];
             }
@@ -756,37 +885,47 @@ impl Parser {
     pub fn get_fonts(&mut self) -> Vec<FontInfo> {
         self.load_resources();
 
-        self.fonts.iter().map(|(id, font)| {
-            let mut info = FontInfo {
-                id: id.clone(),
-                font_name: font.font_name.clone(),
-                family_name: font.family_name.clone(),
-                data_url: None,
-                has_file: false,
-            };
+        self.fonts
+            .iter()
+            .map(|(id, font)| {
+                let mut info = FontInfo {
+                    id: id.clone(),
+                    font_name: font.font_name.clone(),
+                    family_name: font.family_name.clone(),
+                    data_url: None,
+                    has_file: false,
+                };
 
-            // 优先使用已加载的字体文件数据
-            if let Some(font_data) = self.font_files.get(id) {
-                if !font_data.is_empty() {
-                    info.has_file = true;
-                    let mime_type = detect_font_mime(font_data);
-                    info.data_url = Some(format!("data:{};base64,{}", mime_type, BASE64.encode(font_data)));
-                }
-            } else if !font.font_file.is_empty() {
-                if let Ok(font_data) = self.read_file(&font.font_file) {
+                // 优先使用已加载的字体文件数据
+                if let Some(font_data) = self.font_files.get(id) {
                     if !font_data.is_empty() {
                         info.has_file = true;
-                        let mime_type = detect_font_mime(&font_data);
-                        info.data_url = Some(format!("data:{};base64,{}", mime_type, BASE64.encode(&font_data)));
+                        let mime_type = detect_font_mime(font_data);
+                        info.data_url = Some(format!(
+                            "data:{};base64,{}",
+                            mime_type,
+                            BASE64.encode(font_data)
+                        ));
+                    }
+                } else if !font.font_file.is_empty() {
+                    if let Ok(font_data) = self.read_file(&font.font_file) {
+                        if !font_data.is_empty() {
+                            info.has_file = true;
+                            let mime_type = detect_font_mime(&font_data);
+                            info.data_url = Some(format!(
+                                "data:{};base64,{}",
+                                mime_type,
+                                BASE64.encode(&font_data)
+                            ));
+                        }
                     }
                 }
-            }
 
-            info
-        }).collect()
+                info
+            })
+            .collect()
     }
 }
-
 
 /// 检测字体MIME类型
 pub fn detect_font_mime(data: &[u8]) -> &'static str {
@@ -811,7 +950,10 @@ struct PathScanner<'a> {
 
 impl<'a> PathScanner<'a> {
     fn new(s: &'a str) -> Self {
-        PathScanner { data: s.as_bytes(), pos: 0 }
+        PathScanner {
+            data: s.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -865,7 +1007,9 @@ impl<'a> PathScanner<'a> {
 
         let start = self.pos;
 
-        if self.pos < self.data.len() && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+') {
+        if self.pos < self.data.len()
+            && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+')
+        {
             self.pos += 1;
         }
 
@@ -880,9 +1024,13 @@ impl<'a> PathScanner<'a> {
             }
         }
 
-        if self.pos < self.data.len() && (self.data[self.pos] == b'e' || self.data[self.pos] == b'E') {
+        if self.pos < self.data.len()
+            && (self.data[self.pos] == b'e' || self.data[self.pos] == b'E')
+        {
             self.pos += 1;
-            if self.pos < self.data.len() && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+') {
+            if self.pos < self.data.len()
+                && (self.data[self.pos] == b'-' || self.data[self.pos] == b'+')
+            {
                 self.pos += 1;
             }
             while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
@@ -905,9 +1053,16 @@ impl<'a> PathScanner<'a> {
     }
 }
 
-
 /// 转换OFD路径命令为Canvas命令JSON
-pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, offset_y: f64, ctm: &[f64], _page_width: f64, _page_height: f64) -> String {
+pub(crate) fn convert_ofd_path_to_canvas(
+    data: &str,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    ctm: &[f64],
+    _page_width: f64,
+    _page_height: f64,
+) -> String {
     let mut commands: Vec<serde_json::Value> = Vec::new();
 
     let transform_point = |x: f64, y: f64| -> (f64, f64) {
@@ -959,9 +1114,12 @@ pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, 
             }
             b'B' | b'b' => {
                 if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x3), Some(y3)) = (
-                    scanner.next_float(), scanner.next_float(),
-                    scanner.next_float(), scanner.next_float(),
-                    scanner.next_float(), scanner.next_float()
+                    scanner.next_float(),
+                    scanner.next_float(),
+                    scanner.next_float(),
+                    scanner.next_float(),
+                    scanner.next_float(),
+                    scanner.next_float(),
                 ) {
                     let (tx1, ty1) = transform_point(x1, y1);
                     let (tx2, ty2) = transform_point(x2, y2);
@@ -978,8 +1136,10 @@ pub(crate) fn convert_ofd_path_to_canvas(data: &str, scale: f64, offset_x: f64, 
             }
             b'Q' | b'q' => {
                 if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
-                    scanner.next_float(), scanner.next_float(),
-                    scanner.next_float(), scanner.next_float()
+                    scanner.next_float(),
+                    scanner.next_float(),
+                    scanner.next_float(),
+                    scanner.next_float(),
                 ) {
                     let (tx1, ty1) = transform_point(x1, y1);
                     let (tx2, ty2) = transform_point(x2, y2);
