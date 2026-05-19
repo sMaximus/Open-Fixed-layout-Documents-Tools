@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import terser from "@rollup/plugin-terser";
 
 /** 将 CSS 文件内联为 JS 字符串导出 */
@@ -11,27 +12,49 @@ function cssInline() {
   };
 }
 
-const input = "src-js/ofd-viewer.js";
-const plugins = [cssInline()];
-const pluginsMin = [cssInline(), terser()];
+function emitWasmAsset(sourcePath, fileName) {
+  return {
+    name: "emit-wasm-asset",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName,
+        source: fs.readFileSync(sourcePath),
+      });
+    },
+  };
+}
+
+const coreInput = "src-js/ofd-viewer.js";
+const bundleInput = "src-js/ofd-viewer-bundle.js";
+
+function corePlugins({ minify = false } = {}) {
+  return minify ? [cssInline(), terser()] : [cssInline()];
+}
+
+function bundlePlugins({ minify = false } = {}) {
+  const plugins = [cssInline(), emitWasmAsset("pkg/ofd_rust_bg.wasm", "ofd-viewer.wasm")];
+  if (minify) plugins.push(terser());
+  return plugins;
+}
 
 export default [
   {
-    input,
+    input: coreInput,
     output: { file: "dist/ofd-viewer.esm.js", format: "es", sourcemap: true },
-    plugins,
+    plugins: corePlugins(),
   },
   {
-    input,
+    input: coreInput,
     output: {
       file: "dist/ofd-viewer.esm.min.js",
       format: "es",
       sourcemap: true,
     },
-    plugins: pluginsMin,
+    plugins: corePlugins({ minify: true }),
   },
   {
-    input,
+    input: coreInput,
     output: {
       file: "dist/ofd-viewer.umd.js",
       format: "umd",
@@ -39,10 +62,10 @@ export default [
       sourcemap: true,
       exports: "named",
     },
-    plugins,
+    plugins: corePlugins(),
   },
   {
-    input,
+    input: coreInput,
     output: {
       file: "dist/ofd-viewer.umd.min.js",
       format: "umd",
@@ -50,6 +73,46 @@ export default [
       sourcemap: true,
       exports: "named",
     },
-    plugins: pluginsMin,
+    plugins: corePlugins({ minify: true }),
+  },
+  {
+    input: bundleInput,
+    output: {
+      file: "dist/ofd-viewer.bundle.esm.js",
+      format: "es",
+      sourcemap: true,
+    },
+    plugins: bundlePlugins(),
+  },
+  {
+    input: bundleInput,
+    output: {
+      file: "dist/ofd-viewer.bundle.esm.min.js",
+      format: "es",
+      sourcemap: true,
+    },
+    plugins: bundlePlugins({ minify: true }),
+  },
+  {
+    input: bundleInput,
+    output: {
+      file: "dist/ofd-viewer.bundle.umd.js",
+      format: "umd",
+      name: "OFDViewerLib",
+      sourcemap: true,
+      exports: "named",
+    },
+    plugins: bundlePlugins(),
+  },
+  {
+    input: bundleInput,
+    output: {
+      file: "dist/ofd-viewer.bundle.umd.min.js",
+      format: "umd",
+      name: "OFDViewerLib",
+      sourcemap: true,
+      exports: "named",
+    },
+    plugins: bundlePlugins({ minify: true }),
   },
 ];

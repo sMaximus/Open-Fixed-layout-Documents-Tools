@@ -235,6 +235,28 @@ body {
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.25));
 }
 
+/* 打印按钮 */
+.print-btn {
+  background: #0f3460;
+  color: #ccc;
+  border: 1px solid #1a4a7a;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+.print-btn:hover {
+  background: #1a8a4a;
+  color: #fff;
+  border-color: #22c55e;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.3);
+}
+.print-btn:active {
+  background: #16a34a;
+  transform: scale(0.97);
+}
+
 /* 文件内容弹窗 */
 .modal-overlay {
   display: none;

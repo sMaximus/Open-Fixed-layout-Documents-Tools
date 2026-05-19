@@ -649,6 +649,10 @@ pub fn parse_boundary(boundary: &str) -> (f64, f64, f64, f64) {
 /// 解析颜色
 pub fn parse_color(value: &str) -> String {
     if let Some((r, g, b)) = parse_hex_color(value) {
+        // 纯白色填充设为完全透明，避免文字域白色背景遮挡下层内容
+        if r == 255 && g == 255 && b == 255 {
+            return "rgba(255,255,255,0)".to_string();
+        }
         return format!("rgb({},{},{})", r, g, b);
     }
 
@@ -658,7 +662,14 @@ pub fn parse_color(value: &str) -> String {
         scanner.next_float(),
         scanner.next_float(),
     ) {
-        return format!("rgb({},{},{})", r as i32, g as i32, b as i32);
+        let ri = r as i32;
+        let gi = g as i32;
+        let bi = b as i32;
+        // 纯白色填充设为完全透明，避免文字域白色背景遮挡下层内容
+        if ri == 255 && gi == 255 && bi == 255 {
+            return "rgba(255,255,255,0)".to_string();
+        }
+        return format!("rgb({},{},{})", ri, gi, bi);
     }
     "#000".to_string()
 }

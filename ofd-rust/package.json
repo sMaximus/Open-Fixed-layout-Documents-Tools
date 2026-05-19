@@ -9,6 +9,10 @@
       "import": "./dist/ofd-viewer.esm.js",
       "require": "./dist/ofd-viewer.umd.js"
     },
+    "./bundle": {
+      "import": "./dist/ofd-viewer.bundle.esm.js",
+      "require": "./dist/ofd-viewer.bundle.umd.js"
+    },
     "./pkg/*": "./pkg/*"
   },
   "files": [
@@ -20,6 +24,7 @@
     "build:wasm": "cd . && wasm-pack build --target web --out-dir pkg",
     "build:js": "rollup -c rollup.config.mjs",
     "build": "npm run build:wasm && npm run build:js",
+    "test:bundle": "node ./tests-js/bundle-artifacts.test.mjs",
     "dev": "node server.js"
   },
   "devDependencies": {

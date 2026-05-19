@@ -61,9 +61,7 @@
     <div id="viewer"></div>
 
     <script type="module">
-      // 引入 WASM 模块和组件
-      import initWasm, { OFDParser } from "../pkg/ofd_rust.js";
-      import { OFDViewer } from "./ofd-viewer.esm.js";
+      import { OFDViewer } from "./ofd-viewer.bundle.esm.js";
 
       const statusEl = document.getElementById("status");
 
@@ -76,7 +74,7 @@
       });
 
       // 初始化 WASM
-      await viewer.init(initWasm, OFDParser);
+      await viewer.init();
 
       // 文件选择
       document

@@ -40,33 +40,33 @@
     </div>
     <div id="viewer"></div>
 
-    <script src="./dist/ofd-viewer.umd.js"></script>
-    <script type="module">
-      import initWasm, { OFDParser } from "./pkg/ofd_rust.js";
-
+    <script src="./dist/ofd-viewer.bundle.umd.js"></script>
+    <script>
       const statusEl = document.getElementById("status");
       const fileInput = document.getElementById("fileInput");
       const viewerEl = document.getElementById("viewer");
 
-      const viewer = new OFDViewerLib.OFDViewer({
-        container: viewerEl,
-        onStatus: (msg) => {
-          statusEl.textContent = msg;
-        },
-        onError: (err) => {
-          statusEl.textContent = "Error: " + (err?.message || String(err));
-          console.error(err);
-        },
-      });
+      (async () => {
+        const viewer = new OFDViewerLib.OFDViewer({
+          container: viewerEl,
+          onStatus: (msg) => {
+            statusEl.textContent = msg;
+          },
+          onError: (err) => {
+            statusEl.textContent = "Error: " + (err?.message || String(err));
+            console.error(err);
+          },
+        });
 
-      await viewer.init(initWasm, OFDParser);
-      statusEl.textContent = "Ready";
+        await viewer.init();
+        statusEl.textContent = "Ready";
 
-      fileInput.addEventListener("change", async (e) => {
-        const file = e.target.files && e.target.files[0];
-        if (!file) return;
-        await viewer.loadFile(file);
-      });
+        fileInput.addEventListener("change", async (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          await viewer.loadFile(file);
+        });
+      })();
     </script>
   </body>
 </html>

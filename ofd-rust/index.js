@@ -186,8 +186,8 @@ function handleSealPlacementClick(e) {
     return;
   }
 
-  const ofdX = (localX / rect.width) * pageData.width;
-  const ofdY = (localY / rect.height) * pageData.height;
+  const ofdX = (localX / rect.width) * pageData.width * 0.9;
+  const ofdY = (localY / rect.height) * pageData.height * 0.9;
 
   alert(
     `印章放置成功\n页码: ${pageIndex + 1}\nOFD坐标(mm): X=${ofdX.toFixed(2)}, Y=${ofdY.toFixed(2)}`,
@@ -346,6 +346,7 @@ async function parseAndRender(file) {
     updateStatus(`已加载 ${currentPageCount} 页`);
     document.getElementById("xmlBtn").style.display = "";
     document.getElementById("zoomControls").style.display = "";
+    document.getElementById("printBtn").style.display = "";
     if (sealBtn) sealBtn.style.display = "";
   } catch (err) {
     updateStatus("错误: " + err.message);
@@ -809,6 +810,148 @@ function highlightXml(xml) {
   return result;
 }
 
+/**
+ * 打印 OFD 文档
+ * 收集所有已渲染的 SVG 页面，在新窗口中打开并触发浏览器打印对话框
+ */
+function printOFD() {
+  if (!parser || !allPagesData.length) {
+    alert("请先加载 OFD 文件。");
+    return;
+  }
+
+  updateStatus("🖨️ 准备打印...");
+
+  // 确保所有页面都已渲染数据
+  const pageCount = parser.get_page_count();
+  for (let i = 0; i < pageCount; i++) {
+    if (!allPagesData[i]) {
+      try {
+        allPagesData[i] = parser.render_page_svg(i);
+      } catch (err) {
+        console.error(`打印：加载页面 ${i + 1} 失败:`, err);
+      }
+    }
+  }
+
+  // 收集嵌入字体的 @font-face CSS
+  let fontCss = "";
+  const fontStyleEl = document.getElementById("ofd-font-styles");
+  if (fontStyleEl && fontStyleEl.textContent) {
+    fontCss = fontStyleEl.textContent;
+  }
+
+  // 构建打印页面的 HTML
+  let pagesHtml = "";
+  for (let i = 0; i < pageCount; i++) {
+    const page = allPagesData[i];
+    if (!page || page.error || !page.svg) continue;
+
+    // 计算页面宽高（mm），用于打印时的精确定位
+    const widthMM = page.width;
+    const heightMM = page.height;
+
+    pagesHtml += `
+      <div class="print-page" style="width: ${widthMM}mm; height: ${heightMM}mm;">
+        ${page.svg}
+      </div>
+    `;
+  }
+
+  if (!pagesHtml) {
+    alert("没有可打印的页面。");
+    updateStatus(`已加载 ${currentPageCount} 页`);
+    return;
+  }
+
+  const printHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>OFD 打印</title>
+  <style>
+    ${fontCss}
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #fff;
+    }
+
+    .print-page {
+      page-break-after: always;
+      page-break-inside: avoid;
+      position: relative;
+      overflow: hidden;
+      margin: 0 auto;
+    }
+
+    .print-page:last-child {
+      page-break-after: auto;
+    }
+
+    .print-page svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* 屏幕预览样式 */
+    @media screen {
+      body {
+        background: #e0e0e0;
+        padding: 20px;
+      }
+      .print-page {
+        background: #fff;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+        margin-bottom: 20px;
+      }
+    }
+
+    /* 打印样式 */
+    @media print {
+      body { background: #fff; padding: 0; margin: 0; }
+      .print-page {
+        box-shadow: none;
+        margin: 0;
+      }
+
+      @page {
+        margin: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  ${pagesHtml}
+  <script>
+    // 页面加载完成后自动弹出打印对话框
+    window.addEventListener('load', function() {
+      // 等待字体和 SVG 渲染就绪
+      setTimeout(function() {
+        window.print();
+      }, 500);
+    });
+  <\/script>
+</body>
+</html>`;
+
+  // 在新窗口中打开打印页面
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    alert("无法打开打印窗口，请检查浏览器是否拦截了弹出窗口。");
+    updateStatus(`已加载 ${currentPageCount} 页`);
+    return;
+  }
+
+  printWindow.document.open();
+  printWindow.document.write(printHtml);
+  printWindow.document.close();
+
+  updateStatus(`已加载 ${currentPageCount} 页`);
+}
+
 window.showXmlModal = showXmlModal;
 window.hideXmlModal = hideXmlModal;
 window.zoomIn = zoomIn;
@@ -817,6 +960,7 @@ window.resetZoom = resetZoom;
 window.setZoom = setZoom;
 window.startSealPlacement = startSealPlacement;
 window.startSealPlacementWithMock = startSealPlacementWithMock;
+window.printOFD = printOFD;
 
 // 按 Esc 关闭弹窗，Ctrl+/- 缩放
 document.addEventListener("keydown", (e) => {
@@ -838,6 +982,13 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "0") {
     e.preventDefault();
     resetZoom();
+  }
+  // Ctrl+P 打印
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+    if (parser && allPagesData.length) {
+      e.preventDefault();
+      printOFD();
+    }
   }
 });
 

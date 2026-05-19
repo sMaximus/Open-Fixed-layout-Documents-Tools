@@ -1,4 +1,6 @@
 node_modules/
 # Rust build outputs
 ofd-rust/target/
-ofd-rust/target/**
+ofd-rust/target/
+ofd-rust/dist/
+dist/

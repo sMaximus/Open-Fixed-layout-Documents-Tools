@@ -28,6 +28,41 @@ build.bat   # Windows
 
 ## 使用
 
+### 合并版入口（单 JS + 单 wasm）
+
+```javascript
+import { OFDViewer } from "ofd-viewer/bundle";
+
+const viewer = new OFDViewer({
+  container: document.getElementById("viewer"),
+});
+
+await viewer.init();
+await viewer.loadFile(file);
+```
+
+打包产物位于 `dist/`：
+
+- `dist/ofd-viewer.bundle.esm.js`
+- `dist/ofd-viewer.bundle.umd.js`
+- `dist/ofd-viewer.wasm`
+
+浏览器直接使用 UMD 时，只需要同目录的一个 JS 和一个 wasm：
+
+```html
+<script src="./dist/ofd-viewer.bundle.umd.js"></script>
+<script>
+  (async () => {
+    const viewer = new OFDViewerLib.OFDViewer({
+      container: document.getElementById("viewer"),
+    });
+    await viewer.init();
+  })();
+</script>
+```
+
+### 底层 WASM 入口（手动 wiring）
+
 ```javascript
 import init, { OFDParser } from "./pkg/ofd_rust.js";
 
@@ -51,6 +86,13 @@ const fonts = parser.get_fonts();
 ```
 
 ## API
+
+### Bundle OFDViewer
+
+- `new OFDViewer(options)` - 创建查看器
+- `await viewer.init()` - 自动初始化同目录 `ofd-viewer.wasm`
+- `await viewer.init(wasmUrl)` - 指定自定义 wasm 地址
+- `await viewer.init(initWasm, OFDParser, wasmUrl?)` - 兼容原始手动初始化方式
 
 ### OFDParser
 
