@@ -1,0 +1,16 @@
+{
+  "name": "ofd-rust",
+  "type": "module",
+  "description": "OFD document parser and renderer in Rust for WebAssembly",
+  "version": "0.1.0",
+  "files": [
+    "ofd_rust_bg.wasm",
+    "ofd_rust.js",
+    "ofd_rust.d.ts"
+  ],
+  "main": "ofd_rust.js",
+  "types": "ofd_rust.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

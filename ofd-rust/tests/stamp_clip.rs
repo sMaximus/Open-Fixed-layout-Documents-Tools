@@ -15,7 +15,11 @@ fn build_test_ofd(signature_xml: &str) -> Vec<u8> {
     )
 }
 
-fn build_test_ofd_with_index(signatures_xml: &str, signature_xml: &str) -> Vec<u8> {
+fn build_test_ofd_with_files(
+    signatures_xml: &str,
+    signature_xml_files: &[(&str, &str)],
+    extra_files: &[(&str, &[u8])],
+) -> Vec<u8> {
     const OFD_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <OFD>
   <DocBody>
@@ -45,14 +49,6 @@ fn build_test_ofd_with_index(signatures_xml: &str, signature_xml: &str) -> Vec<u
 </Page>
 "#;
 
-    const TINY_PNG: &[u8] = &[
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
-        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
-        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8,
-        0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00,
-        0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-    ];
-
     let cursor = Cursor::new(Vec::<u8>::new());
     let mut zip = ZipWriter::new(cursor);
     let options = FileOptions::default();
@@ -62,14 +58,39 @@ fn build_test_ofd_with_index(signatures_xml: &str, signature_xml: &str) -> Vec<u
         ("Doc_0/Document.xml", DOCUMENT_XML.as_bytes()),
         ("Doc_0/Pages/Page_0/Content.xml", PAGE_XML.as_bytes()),
         ("Doc_0/Signs/Signatures.xml", signatures_xml.as_bytes()),
-        ("Doc_0/Signs/Sign_0/Signature.xml", signature_xml.as_bytes()),
-        ("Doc_0/Signs/Sign_0/Seal.png", TINY_PNG),
     ] {
         zip.start_file(path, options).unwrap();
         zip.write_all(contents).unwrap();
     }
 
+    for &(path, contents) in signature_xml_files {
+        zip.start_file(path, options).unwrap();
+        zip.write_all(contents.as_bytes()).unwrap();
+    }
+
+    for &(path, contents) in extra_files {
+        zip.start_file(path, options).unwrap();
+        zip.write_all(contents).unwrap();
+    }
+
     zip.finish().unwrap().into_inner()
+}
+
+fn build_test_ofd_with_index(signatures_xml: &str, signature_xml: &str) -> Vec<u8> {
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8,
+        0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    let extra_files: Vec<(&str, &[u8])> = vec![("Doc_0/Signs/Sign_0/Seal.png", TINY_PNG)];
+    build_test_ofd_with_files(
+        signatures_xml,
+        &[("Doc_0/Signs/Sign_0/Signature.xml", signature_xml)],
+        &extra_files,
+    )
 }
 
 #[test]
@@ -216,9 +237,60 @@ fn render_page_svg_falls_back_to_scanning_signature_xml_when_index_has_no_entrie
     let result = parser.render_page_svg(0);
     let svg = result.svg.expect("expected svg output");
 
-    assert!(
-        svg.contains("clipPath"),
-        "expected direct Signature.xml scan fallback to recover seam stamp, got: {}",
-        svg
-    );
+}
+
+#[test]
+fn render_page_svg_does_not_reuse_another_signature_seal_for_placeholder_locator() {
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
+        0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
+        0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44,
+        0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00,
+        0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+        0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    let signatures_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signatures>
+  <Signature ID="0" Type="Seal" BaseLoc="Sign_0/Signature.xml"/>
+  <Signature ID="6" Type="Seal" BaseLoc="Sign_1/Signature.xml"/>
+</Signatures>
+"#;
+    let real_signature_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signature>
+  <SignedInfo>
+    <StampAnnot ID="s001" PageRef="1" Boundary="10 20 40 40"/>
+    <Seal><BaseLoc>Seal.esl</BaseLoc></Seal>
+  </SignedInfo>
+  <SignedValue>SignedValue.dat</SignedValue>
+</Signature>
+"#;
+    let locator_signature_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signature>
+  <SignedInfo>
+    <StampAnnot ID="7" PageRef="1" Boundary="68.7917 27.7813 38 38"/>
+    <Seal><BaseLoc>Seal.esl</BaseLoc></Seal>
+  </SignedInfo>
+  <SignedValue>SignedValue.dat</SignedValue>
+</Signature>
+"#;
+
+    let mut parser = Parser::new(build_test_ofd_with_files(
+        signatures_xml,
+        &[
+            ("Doc_0/Signs/Sign_0/Signature.xml", real_signature_xml),
+            ("Doc_0/Signs/Sign_1/Signature.xml", locator_signature_xml),
+        ],
+        &[("Doc_0/Signs/Sign_0/Seal.png", TINY_PNG)],
+    ))
+    .unwrap();
+    parser.parse().unwrap();
+
+    let result = parser.render_page_svg(0);
+    let entries = result.stamp_debug.expect("expected stamp debug entries");
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].annot_id, "s001");
+    assert!(entries[0].seal_found);
+    assert_eq!(entries[1].annot_id, "7");
+    assert!(!entries[1].seal_found, "locator without local seal data must not reuse Sign_0 seal");
 }

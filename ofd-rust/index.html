@@ -9,58 +9,28 @@
   <body>
     <div class="header">
       <h1>📄 OFD 查看器</h1>
-      <button
-        class="upload-btn"
-        onclick="document.getElementById('fileInput').click()"
-      >
+      <button class="upload-btn" id="uploadBtn">
         选择 OFD 文件
       </button>
       <input type="file" id="fileInput" accept=".ofd" />
-      <button
-        class="xml-btn"
-        id="xmlBtn"
-        style="display: none"
-        onclick="window.showXmlModal()"
-      >
+      <button class="xml-btn" id="xmlBtn" style="display: none">
         查看 XML
       </button>
-      <button
-        class="xml-btn"
-        id="sealPlaceBtn"
-        style="display: none"
-        onclick="window.startSealPlacementWithMock()"
-      >
+      <button class="xml-btn" id="sealPlaceBtn" style="display: none">
         放置印章
       </button>
-      <button
-        class="print-btn"
-        id="printBtn"
-        style="display: none"
-        onclick="window.printOFD()"
-      >
+      <button class="print-btn" id="printBtn" style="display: none">
         🖨️ 打印
       </button>
       <div class="zoom-controls" id="zoomControls" style="display: none">
-        <button
-          class="zoom-btn"
-          onclick="window.zoomOut()"
-          title="缩小 (Ctrl+-)"
-        >
+        <button class="zoom-btn" id="zoomOutBtn" title="缩小 (Ctrl+-)">
           −
         </button>
         <span class="zoom-level" id="zoomLevel">100%</span>
-        <button
-          class="zoom-btn"
-          onclick="window.zoomIn()"
-          title="放大 (Ctrl++)"
-        >
+        <button class="zoom-btn" id="zoomInBtn" title="放大 (Ctrl++)">
           +
         </button>
-        <button
-          class="zoom-btn zoom-reset"
-          onclick="window.resetZoom()"
-          title="重置缩放"
-        >
+        <button class="zoom-btn zoom-reset" id="zoomResetBtn" title="重置缩放">
           ↺
         </button>
       </div>
@@ -72,7 +42,7 @@
       <div class="modal">
         <div class="modal-header">
           <h3>📦 OFD 压缩包内容</h3>
-          <button class="modal-close" onclick="window.hideXmlModal()">
+          <button class="modal-close" id="xmlModalCloseBtn">
             关闭
           </button>
         </div>

@@ -220,6 +220,9 @@ impl Parser {
         ];
 
         for candidate in &candidates {
+            if !self.package_contains_exact_path(candidate) {
+                continue;
+            }
             if let Ok(data) = self.read_file(candidate) {
                 if let Some(img) = crate::svg_render::extract_image_from_binary(&data) {
                     return Some(SealImage {
@@ -253,6 +256,13 @@ impl Parser {
         }
 
         None
+    }
+
+    fn package_contains_exact_path(&self, path: &str) -> bool {
+        let normalized = path.trim_start_matches('/').to_lowercase();
+        self.files
+            .iter()
+            .any(|file| file.trim_start_matches('/').to_lowercase() == normalized)
     }
 }
 
