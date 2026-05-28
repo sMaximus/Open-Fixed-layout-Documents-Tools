@@ -233,7 +233,7 @@
 
     _createPage(index) {
       const el = document.createElement("div");
-      el.className = "ofd-page";
+      el.className = `ofd-page ofd-page-${index}`;
       el.dataset.pageIndex = index;
       const pd = this._allPagesData[index];
       const w = pd ? pd.width * this.scale : 210 * this.scale;

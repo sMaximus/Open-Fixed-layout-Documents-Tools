@@ -40,10 +40,10 @@ export class OFDViewer {
     this.container = options.container;
     this.scale = options.scale || SCALE;
     this.initialPages = options.initialPages || INITIAL_PAGES;
-    this.onStatus = options.onStatus || (() => {});
-    this.onDocInfo = options.onDocInfo || (() => {});
-    this.onPageCount = options.onPageCount || (() => {});
-    this.onError = options.onError || (() => {});
+    this.onStatus = options.onStatus || (() => { });
+    this.onDocInfo = options.onDocInfo || (() => { });
+    this.onPageCount = options.onPageCount || (() => { });
+    this.onError = options.onError || (() => { });
 
     this._OFDParser = null;
     this._parser = null;
@@ -185,7 +185,7 @@ export class OFDViewer {
           document.fonts.add(face);
           this._loadedFonts.set(name, face);
           css += `@font-face { font-family: '${name}'; src: url(${font.dataUrl}); }\n`;
-        } catch {}
+        } catch { }
       }
 
       if (css) {
@@ -193,7 +193,7 @@ export class OFDViewer {
         document.head.appendChild(styleEl);
       }
       await document.fonts.ready;
-    } catch {}
+    } catch { }
   }
 
   async _renderAllPages() {
@@ -226,7 +226,7 @@ export class OFDViewer {
 
   _createPage(index) {
     const el = document.createElement("div");
-    el.className = "ofd-page";
+    el.className = `ofd-page ofd-page-${index + 1}`;
     el.dataset.pageIndex = index;
     const pd = this._allPagesData[index];
     const w = pd ? pd.width * this.scale : 210 * this.scale;
