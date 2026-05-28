@@ -69,8 +69,8 @@
       const viewer = new OFDViewer({
         container: document.getElementById("viewer"),
         onStatus: (msg) => (statusEl.textContent = msg),
-        onPageCount: (count) => console.log(`文档共 ${count} 页`),
-        onError: (err) => console.error("OFD 错误:", err),
+        onPageCount: () => {},
+        onError: (err) => (statusEl.textContent = "OFD 错误: " + err.message),
       });
 
       // 初始化 WASM

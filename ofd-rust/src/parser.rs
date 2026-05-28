@@ -91,13 +91,6 @@ impl Parser {
             ..Default::default()
         };
 
-        if self.files.len() > MAX_FILES_IN_PARSE_RESULT {
-            crate::debug_log(&format!(
-                "[parse] too many files ({}), skip files in parse result; use get_files() when needed",
-                self.files.len()
-            ));
-        }
-
         // Parse OFD.xml
         let ofd_data = match self.read_file("OFD.xml") {
             Ok(d) => d,
@@ -140,12 +133,6 @@ impl Parser {
 
                     if let Some(ref doc) = self.document {
                         result.page_count = doc.pages.page.len();
-                        // 调试输出
-                        crate::debug_log(&format!(
-                            "Document parsed: page_count={}, physical_box='{}'",
-                            doc.pages.page.len(),
-                            doc.common_data.page_area.physical_box
-                        ));
                     }
                     result.document = self.document.clone();
                 } else {
@@ -477,26 +464,9 @@ impl Parser {
                         // 预加载字体文件数据，记录该字体有嵌入文件
                         match self.read_file(&font_clone.font_file) {
                             Ok(font_data) if !font_data.is_empty() => {
-                                crate::debug_log(&format!(
-                                    "[资源] 字体加载成功: id={}, path='{}', size={}bytes",
-                                    font.id,
-                                    font_clone.font_file,
-                                    font_data.len()
-                                ));
                                 self.font_files.insert(font.id.clone(), font_data);
                             }
-                            Ok(_) => {
-                                crate::debug_warn(&format!(
-                                    "[资源] 字体文件为空: id={}, path='{}'",
-                                    font.id, font_clone.font_file
-                                ));
-                            }
-                            Err(e) => {
-                                crate::debug_warn(&format!(
-                                    "[资源] 字体文件读取失败: id={}, path='{}', err={}",
-                                    font.id, font_clone.font_file, e
-                                ));
-                            }
+                            Ok(_) | Err(_) => {}
                         }
                     }
                     self.fonts.insert(font.id.clone(), font_clone);
@@ -565,17 +535,6 @@ impl Parser {
 
         let _ = doc_base;
 
-        // 调试：输出已加载的资源信息
-        crate::debug_log(&format!(
-            "[资源] load_resources 完成: fonts={}, font_files={}, images={}, composites={}, draw_params={}",
-            self.fonts.len(), self.font_files.len(), self.images.len(), self.composite_units.len(), self.draw_params.len()
-        ));
-        for (id, font) in &self.fonts {
-            crate::debug_log(&format!(
-                "[资源] font id={}, name='{}', family='{}'",
-                id, font.font_name, font.family_name
-            ));
-        }
     }
 
     /// 懒加载图片
@@ -619,16 +578,10 @@ impl Parser {
 /// 解析边界框
 pub fn parse_box(box_str: &str) -> (f64, f64) {
     let mut scanner = NumberScanner::new(box_str);
-    let x = scanner.next_float(); // skip x
-    let y = scanner.next_float(); // skip y
+    let _ = scanner.next_float(); // skip x
+    let _ = scanner.next_float(); // skip y
     let w = scanner.next_float().unwrap_or(0.0);
     let h = scanner.next_float().unwrap_or(0.0);
-
-    // 调试输出
-    crate::debug_log(&format!(
-        "parse_box: input='{}', x={:?}, y={:?}, w={}, h={}",
-        box_str, x, y, w, h
-    ));
 
     if w == 0.0 && h == 0.0 {
         return (210.0, 297.0);

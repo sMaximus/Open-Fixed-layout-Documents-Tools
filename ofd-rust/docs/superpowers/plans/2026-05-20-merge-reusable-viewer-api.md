@@ -319,7 +319,6 @@ import { initOFDViewer } from "./pkg/ofd_rust.js";
 initOFDViewer().catch((err) => {
   const status = document.getElementById("status");
   if (status) status.textContent = "❌ WASM 加载失败";
-  console.error(err);
 });
 ```
 
@@ -386,7 +385,7 @@ export function initOFDViewer(options?: OFDViewerOptions): Promise<OFDViewer>;
 Run:
 
 ```bash
-node -e "import('typescript').then(ts=>{const fs=require('fs');const s=fs.readFileSync('pkg/ofd_rust.d.ts','utf8');const r=ts.transpileModule(s,{compilerOptions:{module:ts.ModuleKind.ESNext}}); if(r.diagnostics?.length){console.error(r.diagnostics);process.exit(1)}}).catch(()=>process.exit(0))"
+node -e "import('typescript').then(ts=>{const fs=require('fs');const s=fs.readFileSync('pkg/ofd_rust.d.ts','utf8');const r=ts.transpileModule(s,{compilerOptions:{module:ts.ModuleKind.ESNext}}); if(r.diagnostics?.length){throw new Error(String(r.diagnostics))}}).catch(()=>process.exit(0))"
 ```
 
 Expected: exit code 0.

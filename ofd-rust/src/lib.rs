@@ -18,22 +18,6 @@ pub use render::*;
 pub use svg_render::*;
 pub use types::*;
 
-pub(crate) fn debug_log(message: &str) {
-    #[cfg(target_arch = "wasm32")]
-    web_sys::console::log_1(&message.into());
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = message;
-}
-
-pub(crate) fn debug_warn(message: &str) {
-    #[cfg(target_arch = "wasm32")]
-    web_sys::console::warn_1(&message.into());
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = message;
-}
-
 /// WASM 导出的 OFD 解析器
 #[wasm_bindgen]
 pub struct OFDParser {

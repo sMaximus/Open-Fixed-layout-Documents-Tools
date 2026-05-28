@@ -153,9 +153,6 @@ function __wbg_get_imports() {
     __wbg___wbindgen_throw_be289d5034ed271b: function (arg0, arg1) {
       throw new Error(getStringFromWasm0(arg0, arg1));
     },
-    __wbg_log_6b5ca2e6124b2808: function (arg0) {
-      console.log(arg0);
-    },
     __wbg_new_361308b2356cecd0: function () {
       const ret = new Object();
       return ret;
@@ -183,9 +180,6 @@ function __wbg_get_imports() {
     },
     __wbg_set_f43e577aea94465b: function (arg0, arg1, arg2) {
       arg0[arg1 >>> 0] = arg2;
-    },
-    __wbg_warn_f7ae1b2e66ccb930: function (arg0) {
-      console.warn(arg0);
     },
     __wbindgen_cast_0000000000000001: function (arg0) {
       // Cast intrinsic for `F64 -> Externref`.
@@ -368,14 +362,9 @@ async function __wbg_load(module, imports) {
         const validResponse = module.ok && expectedResponseType(module.type);
 
         if (
-          validResponse &&
-          module.headers.get("Content-Type") !== "application/wasm"
+          !validResponse ||
+          module.headers.get("Content-Type") === "application/wasm"
         ) {
-          console.warn(
-            "`WebAssembly.instantiateStreaming` failed because your server does not serve Wasm with `application/wasm` MIME type. Falling back to `WebAssembly.instantiate` which is slower. Original error:\n",
-            e,
-          );
-        } else {
           throw e;
         }
       }
@@ -410,10 +399,6 @@ function initSync(module) {
   if (module !== undefined) {
     if (Object.getPrototypeOf(module) === Object.prototype) {
       ({ module } = module);
-    } else {
-      console.warn(
-        "using deprecated parameters for `initSync()`; pass a single object instead",
-      );
     }
   }
 
@@ -431,10 +416,6 @@ async function __wbg_init(module_or_path) {
   if (module_or_path !== undefined) {
     if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
       ({ module_or_path } = module_or_path);
-    } else {
-      console.warn(
-        "using deprecated parameters for the initialization function; pass a single object instead",
-      );
     }
   }
 
@@ -613,8 +594,7 @@ export function createOFDViewer(options = {}) {
       const pageData = parser.render_page_svg(pageIndex);
       allPagesData[pageIndex] = pageData;
       return pageData;
-    } catch (err) {
-      console.error("加载页面数据失败:", err);
+    } catch {
       return null;
     }
   }
@@ -723,23 +703,10 @@ export function createOFDViewer(options = {}) {
   async function loadOFDFonts() {
     try {
       const fonts = parser.get_fonts();
-      console.log("[字体] get_fonts 返回:", JSON.stringify(fonts, null, 2));
-      if (!fonts || fonts.length === 0) {
-        console.warn("[字体] 没有字体信息");
-        return;
-      }
-
-      // 打印每个字体的关键字段
-      for (const f of fonts) {
-        console.log(
-          `[字体] id=${f.id}, hasFile=${f.hasFile}, dataUrl存在=${!!f.dataUrl}, dataUrl长度=${f.dataUrl ? f.dataUrl.length : 0}`,
-        );
-      }
+      if (!fonts || fonts.length === 0) return;
 
       const embeddedFonts = fonts.filter((f) => f.hasFile && f.dataUrl);
-      console.log(
-        `[字体] 嵌入字体数量: ${embeddedFonts.length} / ${fonts.length}`,
-      );
+      if (embeddedFonts.length === 0) return;
 
       // 清理旧的字体样式
       let styleEl = getElement("ofd-font-styles");
@@ -752,38 +719,22 @@ export function createOFDViewer(options = {}) {
         const fontName = `OFD_Font_${font.id}`;
         if (loadedFonts.has(fontName)) continue;
         try {
-          // 通过 CSS @font-face 注册字体
-          cssText += `@font-face { font-family: '${fontName}'; src: url(${font.dataUrl}); }\n`;
-
-          // 同时通过 FontFace API 加载
           const fontFace = new FontFaceCtor(fontName, `url(${font.dataUrl})`);
           await fontFace.load();
           doc.fonts.add(fontFace);
           loadedFonts.set(fontName, fontFace);
-          console.log(
-            `[字体] 已加载: ${fontName} (${font.fontName}/${font.familyName}), status=${fontFace.status}`,
-          );
-        } catch (err) {
-          console.warn(`字体加载失败: ${fontName}`, err);
-        }
+          cssText += `@font-face { font-family: '${fontName}'; src: url(${font.dataUrl}); }\n`;
+        } catch {}
       }
 
       if (cssText) {
         styleEl.textContent = cssText;
         doc.head.appendChild(styleEl);
-        console.log("[字体] @font-face CSS 已注入到 head");
       }
 
       // 等待所有字体就绪
       await doc.fonts.ready;
-      console.log(`[字体] 所有字体就绪, 已加载 ${loadedFonts.size} 个`);
-      // 列出所有已注册的字体
-      for (const f of doc.fonts) {
-        console.log(`[字体] doc.fonts: ${f.family} status=${f.status}`);
-      }
-    } catch (err) {
-      console.warn("加载字体出错:", err);
-    }
+    } catch {}
   }
 
   async function parseAndRender(file) {
@@ -800,7 +751,6 @@ export function createOFDViewer(options = {}) {
       '<div class="empty-state loading"><p>正在解析文档...</p></div>';
 
     try {
-      const totalStart = performance.now();
       const arrayBuffer = await file.arrayBuffer();
       const data = new Uint8Array(arrayBuffer);
 
@@ -819,7 +769,6 @@ export function createOFDViewer(options = {}) {
       updateStatus("渲染页面...");
       await renderAllPages();
 
-      console.log(`[总耗时] ${(performance.now() - totalStart).toFixed(2)}ms`);
       updateStatus(`已加载 ${currentPageCount} 页`);
       getElement("xmlBtn").style.display = "";
       getElement("zoomControls").style.display = "";
@@ -829,7 +778,6 @@ export function createOFDViewer(options = {}) {
       updateStatus("错误: " + err.message);
       viewer.innerHTML = `<div class="empty-state"><p>解析失败</p><p style="font-size:12px;">${err.message}</p></div>`;
       if (sealBtn) sealBtn.style.display = "none";
-      console.error(err);
     }
   }
 
@@ -849,12 +797,8 @@ export function createOFDViewer(options = {}) {
     const initialCount = Math.min(INITIAL_PAGES, pageCount);
 
     for (let i = 0; i < initialCount; i++) {
-      const stepStart = performance.now();
       const pageData = parser.render_page_svg(i);
       allPagesData[i] = pageData;
-      console.log(
-        `[渲染] 页面${i + 1} SVG: ${(performance.now() - stepStart).toFixed(2)}ms`,
-      );
     }
 
     for (let i = 0; i < initialCount; i++) {
@@ -933,18 +877,6 @@ export function createOFDViewer(options = {}) {
     container.style.width = `${pxWidth}px`;
     container.style.height = `${pxHeight}px`;
 
-    if (page.stampDebug && page.stampDebug.length > 0) {
-      console.groupCollapsed(
-        `[StampDebug] 页面${pageIndex + 1}: ${page.stampDebug.length} 条`,
-      );
-      page.stampDebug.forEach((entry, idx) => {
-        console.log(`[StampDebug] #${idx + 1}`, entry);
-      });
-      console.groupEnd();
-    } else {
-      console.log(`[StampDebug] 页面${pageIndex + 1}: 无签章调试信息`);
-    }
-
     // SVG 层
     if (page.svg) {
       const svgContainer = doc.createElement("div");
@@ -965,24 +897,6 @@ export function createOFDViewer(options = {}) {
             svgStyle.textContent = existingStyle.textContent;
             svgEl.insertBefore(svgStyle, svgEl.firstChild);
           }
-        }
-
-        const paths = svgEl.querySelectorAll("path").length;
-        const images = svgEl.querySelectorAll("image").length;
-        const texts = svgEl.querySelectorAll("text").length;
-        console.log(
-          `[SVG] 页面${pageIndex + 1}: paths=${paths}, images=${images}, texts=${texts}`,
-        );
-        console.log(
-          `[SVG尺寸调试] 容器: ${pxWidth}x${pxHeight}, SVG属性: width=${svgEl.getAttribute("width")} height=${svgEl.getAttribute("height")}, SVG实际: ${svgEl.getBoundingClientRect().width}x${svgEl.getBoundingClientRect().height}`,
-        );
-        // 调试：输出前几个 text 元素的完整属性
-        const textEls = svgEl.querySelectorAll("text");
-        for (let i = 0; i < Math.min(5, textEls.length); i++) {
-          const t = textEls[i];
-          console.log(
-            `[SVG文字调试] text[${i}]: font-size="${t.getAttribute("font-size")}", data-mm-size="${t.getAttribute("data-mm-size")}", stroke="${t.getAttribute("stroke")}", stroke-width="${t.getAttribute("stroke-width")}", fill="${t.getAttribute("fill")}", content="${t.textContent}", parent=<${t.parentElement.tagName} transform="${t.parentElement.getAttribute("transform")}">`,
-          );
         }
       }
     }
@@ -1072,9 +986,7 @@ export function createOFDViewer(options = {}) {
       const pageData = parser.render_page_svg(pageIndex);
       allPagesData[pageIndex] = pageData;
       await renderPageContent(pageIndex);
-    } catch (err) {
-      console.error(`加载页面 ${pageIndex + 1} 失败:`, err);
-    }
+    } catch {}
   }
 
   // XML 弹窗逻辑
@@ -1305,9 +1217,7 @@ export function createOFDViewer(options = {}) {
       if (!allPagesData[i]) {
         try {
           allPagesData[i] = parser.render_page_svg(i);
-        } catch (err) {
-          console.error(`打印：加载页面 ${i + 1} 失败:`, err);
-        }
+        } catch {}
       }
     }
 

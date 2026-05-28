@@ -249,8 +249,7 @@ impl Parser {
         let mut font_css = String::new();
         for (id, _font) in &self.fonts {
             if let Some(font_data) = self.font_files.get(id) {
-                if !font_data.is_empty() {
-                    let mime_type = detect_font_mime(font_data);
+                if let Some(mime_type) = detect_font_mime(font_data) {
                     let b64 = BASE64.encode(font_data);
                     let _ = write!(font_css,
                         "@font-face {{ font-family: 'OFD_Font_{}'; src: url('data:{};base64,{}'); }}\n",
@@ -284,38 +283,10 @@ impl Parser {
             result.stamp_debug = Some(stamps.iter().map(|stamp| stamp.debug_info()).collect());
         }
 
-        // 印章（含 ASN.1 提取图片）先渲染，确保后续文字层在其上方
-        self.load_stamps_svg(
-            &mut svg_parts,
-            &mut text_overlay,
-            &stamps,
-            scale,
-            page_index,
-            width,
-            height,
-        );
-
         // 获取页面层
         let layers = self.get_page_layers(&page);
 
-        crate::debug_log(&format!(
-            "[SVG渲染] page_index={}, templates={}, layers={}, page_xml_len={}",
-            page_index,
-            page.template.len(),
-            layers.len(),
-            page_xml.len()
-        ));
-
-        for (li, layer) in layers.iter().enumerate() {
-            let path_count = layer.path_objects().count();
-            let img_count = layer.image_objects().count();
-            let text_count = layer.text_objects().count();
-            let composite_count = layer.composite_objects().count();
-            crate::debug_log(&format!(
-                "[SVG] layer[{}]: paths={}, images={}, texts={}, composites={}",
-                li, path_count, img_count, text_count, composite_count
-            ));
-
+        for layer in layers.iter() {
             // Resolve layer-level DrawParam
             let layer_dp = if !layer.draw_param.is_empty() {
                 self.draw_params.get(&layer.draw_param).cloned()
@@ -325,37 +296,17 @@ impl Parser {
 
             // Keep original object order to preserve z-order (e.g. strikethrough paths).
             for obj in &layer.objects {
-                match obj {
-                    LayerObject::PathObject(path_obj) => {
-                        if let Some(s) = self
-                            .path_object_to_svg_with_dp(path_obj, scale, width, height, &layer_dp)
-                        {
-                            svg_parts.push(s);
-                        }
-                    }
-                    LayerObject::ImageObject(img) => {
-                        if let Some(s) = self.image_object_to_svg(img, scale) {
-                            svg_parts.push(s);
-                        }
-                    }
-                    LayerObject::TextObject(text) => {
-                        let (text_svgs, overlays, html_items) =
-                            self.render_text_svg(text, scale, &layer_dp);
-                        svg_parts.extend(text_svgs);
-                        text_overlay.extend(overlays);
-                        html_texts.extend(html_items);
-                    }
-                    LayerObject::CompositeObject(comp) => {
-                        self.render_composite_object_svg(
-                            &mut svg_parts,
-                            &mut text_overlay,
-                            comp,
-                            scale,
-                            width,
-                            height,
-                        );
-                    }
-                }
+                self.render_layer_object_svg(
+                    &mut svg_parts,
+                    &mut text_overlay,
+                    &mut html_texts,
+                    obj,
+                    scale,
+                    width,
+                    height,
+                    &layer_dp,
+                    true,
+                );
             }
         }
 
@@ -363,6 +314,17 @@ impl Parser {
         self.load_page_annot_svg(
             &mut svg_parts,
             &mut text_overlay,
+            scale,
+            page_index,
+            width,
+            height,
+        );
+
+        // 签章最后渲染，并使用混合模式模拟纸面盖章效果。
+        self.load_stamps_svg(
+            &mut svg_parts,
+            &mut text_overlay,
+            &stamps,
             scale,
             page_index,
             width,
@@ -396,6 +358,66 @@ impl Parser {
             layers = page.layer.iter().collect();
         }
         layers
+    }
+
+    fn render_layer_object_svg(
+        &mut self,
+        svg_parts: &mut Vec<String>,
+        text_overlay: &mut Vec<TextOverlayItem>,
+        html_texts: &mut Vec<HtmlTextItem>,
+        obj: &LayerObject,
+        scale: f64,
+        page_w: f64,
+        page_h: f64,
+        layer_dp: &Option<DrawParam>,
+        render_composites: bool,
+    ) {
+        match obj {
+            LayerObject::PathObject(path_obj) => {
+                if let Some(s) =
+                    self.path_object_to_svg_with_dp(path_obj, scale, page_w, page_h, layer_dp)
+                {
+                    svg_parts.push(s);
+                }
+            }
+            LayerObject::ImageObject(img) => {
+                if let Some(s) = self.image_object_to_svg(img, scale) {
+                    svg_parts.push(s);
+                }
+            }
+            LayerObject::TextObject(text) => {
+                let (text_svgs, overlays, html_items) = self.render_text_svg(text, scale, layer_dp);
+                svg_parts.extend(text_svgs);
+                text_overlay.extend(overlays);
+                html_texts.extend(html_items);
+            }
+            LayerObject::CompositeObject(comp) if render_composites => {
+                self.render_composite_object_svg(
+                    svg_parts,
+                    text_overlay,
+                    comp,
+                    scale,
+                    page_w,
+                    page_h,
+                );
+            }
+            LayerObject::CompositeObject(_) => {}
+            LayerObject::PageBlock(block) => {
+                for child in &block.objects {
+                    self.render_layer_object_svg(
+                        svg_parts,
+                        text_overlay,
+                        html_texts,
+                        child,
+                        scale,
+                        page_w,
+                        page_h,
+                        layer_dp,
+                        render_composites,
+                    );
+                }
+            }
+        }
     }
 
     /// 渲染模板层为 SVG
@@ -464,27 +486,18 @@ impl Parser {
 
                 // Keep original object order to preserve z-order (e.g. strikethrough paths).
                 for obj in &layer.objects {
-                    match obj {
-                        LayerObject::PathObject(path_obj) => {
-                            if let Some(s) = self.path_object_to_svg_with_dp(
-                                path_obj, scale, page_w, page_h, &layer_dp,
-                            ) {
-                                svg_parts.push(s);
-                            }
-                        }
-                        LayerObject::ImageObject(img) => {
-                            if let Some(s) = self.image_object_to_svg(img, scale) {
-                                svg_parts.push(s);
-                            }
-                        }
-                        LayerObject::TextObject(text) => {
-                            let (text_svgs, overlays, _html_items) =
-                                self.render_text_svg(text, scale, &layer_dp);
-                            svg_parts.extend(text_svgs);
-                            text_overlay.extend(overlays);
-                        }
-                        LayerObject::CompositeObject(_) => {}
-                    }
+                    let mut ignored_html_texts = Vec::new();
+                    self.render_layer_object_svg(
+                        svg_parts,
+                        text_overlay,
+                        &mut ignored_html_texts,
+                        obj,
+                        scale,
+                        page_w,
+                        page_h,
+                        &layer_dp,
+                        false,
+                    );
                 }
             }
         }
@@ -1401,12 +1414,6 @@ impl Parser {
                     cg_glyph_map.insert(char_idx, glyph_ids[gi]);
                 }
             }
-            if !cg_glyph_map.is_empty() {
-                crate::debug_log(&format!(
-                    "[CGTransform] TextObject id={}, mappings={:?}",
-                    text.id, cg_glyph_map
-                ));
-            }
         }
 
         let use_cg_transform = !cg_glyph_map.is_empty();
@@ -1424,19 +1431,6 @@ impl Parser {
 
             let delta_x = parse_deltas(&tc.delta_x);
             let delta_y = parse_deltas(&tc.delta_y);
-
-            if !delta_x.is_empty() || !delta_y.is_empty() {
-                let preview: String = content.chars().take(10).collect();
-                crate::debug_log(&format!(
-                    "[TextCode] chars={}, deltaX_count={}, deltaY_count={}, X={}, Y={}, text='{}'",
-                    chars.len(),
-                    delta_x.len(),
-                    delta_y.len(),
-                    tc.x,
-                    tc.y,
-                    preview
-                ));
-            }
 
             // mm 空间累加位置（CTM 缩放已吸收，坐标需要同步缩放）
             let mut current_x_mm = tc.x * ctm_scale_x;
@@ -1510,20 +1504,6 @@ impl Parser {
                             .get(font_id)
                             .and_then(|data| glyph_to_svg_path(data, ch))
                     };
-
-                    // 首个字符输出调试信息
-                    if i == 0 {
-                        let has_font_file = self.font_files.contains_key(font_id);
-                        let font_info = self
-                            .fonts
-                            .get(font_id)
-                            .map(|f| format!("name='{}' family='{}'", f.font_name, f.family_name))
-                            .unwrap_or_default();
-                        crate::debug_log(&format!(
-                            "[文字渲染] TextObject id={}, font_id={}, {}, has_font_file={}, glyph_path={}, cg_glyph_id={:?}, char='{}', font_size_px={:.2}",
-                            text.id, font_id, font_info, has_font_file, glyph_path.is_some(), cg_glyph_id, ch, font_size_px
-                        ));
-                    }
 
                     if let Some((path_d, _advance)) = glyph_path {
                         // 字体坐标系：units_per_em → 需要缩放到目标字号
@@ -1709,13 +1689,7 @@ impl Parser {
     ) {
         let unit = match self.composite_units.get(&comp.resource_id) {
             Some(u) => u.clone(),
-            None => {
-                crate::debug_log(&format!(
-                    "[CompositeObject] unit not found: ResourceID={}",
-                    comp.resource_id
-                ));
-                return;
-            }
+            None => return,
         };
 
         let (cx, cy, cw, ch) = parse_boundary(&comp.boundary);
@@ -1742,10 +1716,6 @@ impl Parser {
                 true
             };
             if declared_seems_wrong || ratio_off {
-                crate::debug_log(&format!(
-                    "[CompositeObject] 使用实际包围盒: declared={}x{}, actual={:.2}x{:.2}, boundary={}x{}",
-                    unit.width, unit.height, actual_w, actual_h, cw, ch
-                ));
                 (actual_w, actual_h)
             } else {
                 (unit.width, unit.height)
@@ -1767,30 +1737,60 @@ impl Parser {
         ));
 
         for obj in &page_block.objects {
-            match obj {
-                LayerObject::PathObject(path_obj) => {
-                    if let Some(s) = self.path_object_to_svg(path_obj, scale, page_w, page_h) {
-                        svg_parts.push(s);
-                    }
-                }
-                LayerObject::ImageObject(img) => {
-                    if let Some(s) = self.image_object_to_svg(img, scale) {
-                        svg_parts.push(s);
-                    }
-                }
-                LayerObject::TextObject(text) => {
-                    let (text_svgs, overlays, _html_items) =
-                        self.render_text_svg(text, scale, &None);
-                    svg_parts.extend(text_svgs);
-                    text_overlay.extend(overlays);
-                }
-                LayerObject::CompositeObject(_) => {
-                    // 不支持嵌套复合对象
-                }
-            }
+            self.render_composite_page_block_object_svg(
+                svg_parts,
+                text_overlay,
+                obj,
+                scale,
+                page_w,
+                page_h,
+            );
         }
 
         svg_parts.push("</g>".to_string());
+    }
+
+    fn render_composite_page_block_object_svg(
+        &mut self,
+        svg_parts: &mut Vec<String>,
+        text_overlay: &mut Vec<TextOverlayItem>,
+        obj: &LayerObject,
+        scale: f64,
+        page_w: f64,
+        page_h: f64,
+    ) {
+        match obj {
+            LayerObject::PathObject(path_obj) => {
+                if let Some(s) = self.path_object_to_svg(path_obj, scale, page_w, page_h) {
+                    svg_parts.push(s);
+                }
+            }
+            LayerObject::ImageObject(img) => {
+                if let Some(s) = self.image_object_to_svg(img, scale) {
+                    svg_parts.push(s);
+                }
+            }
+            LayerObject::TextObject(text) => {
+                let (text_svgs, overlays, _html_items) = self.render_text_svg(text, scale, &None);
+                svg_parts.extend(text_svgs);
+                text_overlay.extend(overlays);
+            }
+            LayerObject::PageBlock(block) => {
+                for child in &block.objects {
+                    self.render_composite_page_block_object_svg(
+                        svg_parts,
+                        text_overlay,
+                        child,
+                        scale,
+                        page_w,
+                        page_h,
+                    );
+                }
+            }
+            LayerObject::CompositeObject(_) => {
+                // 不支持嵌套复合对象
+            }
+        }
     }
 
     /// 计算复合图元内所有子元素的实际包围盒（mm 空间）
@@ -1846,6 +1846,7 @@ impl Parser {
                     LayerObject::ImageObject(i) => &i.boundary,
                     LayerObject::TextObject(t) => &t.boundary,
                     LayerObject::CompositeObject(c) => &c.boundary,
+                    LayerObject::PageBlock(_) => continue,
                 };
                 if boundary_str.is_empty() {
                     continue;
@@ -1979,11 +1980,6 @@ impl Parser {
             for annot in &page_annot.annots {
                 let (ax, ay, _, _) = parse_boundary(&annot.appearance.boundary);
 
-                crate::debug_log(&format!(
-                    "[Annot] id={}, type='{}', subtype='{}', appearance_boundary='{}', ax={:.4}, ay={:.4}",
-                    annot.id, annot.annot_type, annot.subtype, annot.appearance.boundary, ax, ay
-                ));
-
                 // 用 <g> 包裹注释，偏移到注释位置
                 svg_parts.push(format!(
                     r#"<g transform="translate({:.4},{:.4})">"#,
@@ -1994,27 +1990,18 @@ impl Parser {
                 // 处理 PageBlock 内的对象
                 for block in &annot.appearance.page_blocks {
                     for obj in &block.objects {
-                        match obj {
-                            crate::page::LayerObject::ImageObject(a_img) => {
-                                if let Some(s) = self.image_object_to_svg(a_img, scale) {
-                                    svg_parts.push(s);
-                                }
-                            }
-                            crate::page::LayerObject::PathObject(path_obj) => {
-                                if let Some(s) =
-                                    self.path_object_to_svg(path_obj, scale, page_w, page_h)
-                                {
-                                    svg_parts.push(s);
-                                }
-                            }
-                            crate::page::LayerObject::TextObject(text_obj) => {
-                                let (text_svgs, overlays, _html) =
-                                    self.render_text_svg(text_obj, scale, &None);
-                                svg_parts.extend(text_svgs);
-                                text_overlay.extend(overlays);
-                            }
-                            crate::page::LayerObject::CompositeObject(_) => {}
-                        }
+                        let mut ignored_html_texts = Vec::new();
+                        self.render_layer_object_svg(
+                            svg_parts,
+                            text_overlay,
+                            &mut ignored_html_texts,
+                            obj,
+                            scale,
+                            page_w,
+                            page_h,
+                            &None,
+                            false,
+                        );
                     }
                 }
 
@@ -2051,11 +2038,6 @@ impl Parser {
         _page_w: f64,
         _page_h: f64,
     ) {
-        crate::debug_log(&format!(
-            "[SVGStamp] page_index={}, emitting {} stamp node(s)",
-            page_index,
-            stamps.len()
-        ));
         for (stamp_index, stamp) in stamps.iter().enumerate() {
             if let Some(data_url) = &stamp.image_data_url {
                 let image = format!(
@@ -2081,15 +2063,17 @@ impl Parser {
                         stamp.visible_rect.width * scale,
                         stamp.visible_rect.height * scale
                     ));
-                    svg_parts.push(format!(r#"<g clip-path="url(#{})">{}</g>"#, clip_id, image));
+                    svg_parts.push(format!(
+                        r#"<g class="ofd-signature-stamp" clip-path="url(#{})" style="mix-blend-mode: multiply; pointer-events: none">{}</g>"#,
+                        clip_id, image
+                    ));
                 } else {
-                    svg_parts.push(image);
+                    svg_parts.push(format!(
+                        r#"<g class="ofd-signature-stamp" style="mix-blend-mode: multiply; pointer-events: none">{}</g>"#,
+                        image
+                    ));
                 }
             } else {
-                crate::debug_warn(&format!(
-                    "[SVGStamp] annot_id={}, page_ref={} has no seal image; using placeholder",
-                    stamp.id, stamp.page_ref
-                ));
                 text_overlay.push(TextOverlayItem {
                     text: "[电子签章]".to_string(),
                     x: stamp.visible_rect.x * scale,

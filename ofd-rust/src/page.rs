@@ -56,7 +56,7 @@ pub struct Layer {
     pub objects: Vec<LayerObject>,
 }
 
-/// 图层对象（可以是文本、路径或图片）
+/// 图层对象（可以是文本、路径、图片、复合对象或页面块）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum LayerObject {
@@ -64,6 +64,16 @@ pub enum LayerObject {
     PathObject(PathObject),
     ImageObject(ImageObject),
     CompositeObject(CompositeObject),
+    PageBlock(PageBlock),
+}
+
+/// 页面块。部分 OFD 页面会在 Layer 内用 PageBlock 包裹实际绘制对象。
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct PageBlock {
+    #[serde(rename = "@ID", default)]
+    pub id: String,
+    #[serde(rename = "$value", default)]
+    pub objects: Vec<LayerObject>,
 }
 
 /// 复合对象引用

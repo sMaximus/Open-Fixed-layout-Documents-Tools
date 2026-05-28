@@ -36,5 +36,4 @@ initOFDViewer()
   .catch((err) => {
     const status = document.getElementById("status");
     if (status) status.textContent = "❌ WASM 加载失败";
-    console.error(err);
   });

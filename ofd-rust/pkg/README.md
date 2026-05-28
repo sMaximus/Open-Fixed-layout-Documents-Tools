@@ -74,12 +74,12 @@ const parser = new OFDParser(data);
 
 // 解析
 const result = parser.parse();
-console.log("页数:", result.pageCount);
+const pageCount = result.pageCount;
 
 // 渲染页面
 const pageResult = parser.render_page(0);
-console.log("宽度:", pageResult.width);
-console.log("高度:", pageResult.height);
+const pageWidth = pageResult.width;
+const pageHeight = pageResult.height;
 
 // 获取字体
 const fonts = parser.get_fonts();

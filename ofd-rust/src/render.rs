@@ -212,14 +212,6 @@ impl Parser {
         // 获取页面尺寸
         let (width, height) = self.get_page_size_from_page(&page);
 
-        // 调试：输出页面尺寸信息
-        crate::debug_log(&format!(
-            "Page size: page.area.physical_box='{}', doc.page_area.physical_box='{}', result=({}, {})",
-            page.area.physical_box,
-            self.document.as_ref().map(|d| d.common_data.page_area.physical_box.as_str()).unwrap_or("N/A"),
-            width, height
-        ));
-
         let scale = 3.78; // mm to px
         result.width = width * scale;
         result.height = height * scale;
@@ -270,19 +262,35 @@ impl Parser {
         for layer in layers {
             // Keep original object order to preserve z-order (e.g. text strikethrough paths).
             for obj in &layer.objects {
-                match obj {
-                    LayerObject::ImageObject(img) => {
-                        self.extract_image(result, img, scale);
-                    }
-                    LayerObject::PathObject(path_obj) => {
-                        self.extract_path(result, path_obj, scale, result.width, result.height);
-                    }
-                    LayerObject::TextObject(text) => {
-                        self.extract_text(result, text, scale);
-                    }
-                    LayerObject::CompositeObject(comp) => {
-                        self.extract_composite_object(result, comp, scale);
-                    }
+                self.extract_layer_object(result, obj, scale);
+            }
+        }
+    }
+
+    fn extract_layer_object(
+        &mut self,
+        result: &mut PageRenderResult,
+        obj: &LayerObject,
+        scale: f64,
+    ) {
+        match obj {
+            LayerObject::ImageObject(img) => {
+                self.extract_image(result, img, scale);
+            }
+            LayerObject::PathObject(path_obj) => {
+                let page_w = result.width;
+                let page_h = result.height;
+                self.extract_path(result, path_obj, scale, page_w, page_h);
+            }
+            LayerObject::TextObject(text) => {
+                self.extract_text(result, text, scale);
+            }
+            LayerObject::CompositeObject(comp) => {
+                self.extract_composite_object(result, comp, scale);
+            }
+            LayerObject::PageBlock(block) => {
+                for child in &block.objects {
+                    self.extract_layer_object(result, child, scale);
                 }
             }
         }
@@ -317,33 +325,51 @@ impl Parser {
         };
 
         for obj in &page_block.objects {
-            match obj {
-                LayerObject::PathObject(path_obj) => {
-                    // 调整 boundary 坐标
-                    let mut adjusted = path_obj.clone();
-                    let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
-                    adjusted.boundary =
-                        format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
-                    self.extract_path(result, &adjusted, scale, result.width, result.height);
-                }
-                LayerObject::ImageObject(img) => {
-                    let mut adjusted = img.clone();
-                    let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
-                    adjusted.boundary =
-                        format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
-                    self.extract_image(result, &adjusted, scale);
-                }
-                LayerObject::TextObject(text) => {
-                    let mut adjusted = text.clone();
-                    let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
-                    adjusted.boundary =
-                        format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
-                    // 缩放字体大小
-                    adjusted.size *= sy;
-                    self.extract_text(result, &adjusted, scale);
-                }
-                LayerObject::CompositeObject(_) => {}
+            self.extract_composite_page_block_object(result, obj, scale, cx, cy, sx, sy);
+        }
+    }
+
+    fn extract_composite_page_block_object(
+        &mut self,
+        result: &mut PageRenderResult,
+        obj: &LayerObject,
+        scale: f64,
+        cx: f64,
+        cy: f64,
+        sx: f64,
+        sy: f64,
+    ) {
+        match obj {
+            LayerObject::PathObject(path_obj) => {
+                let mut adjusted = path_obj.clone();
+                let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
+                adjusted.boundary =
+                    format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                let page_w = result.width;
+                let page_h = result.height;
+                self.extract_path(result, &adjusted, scale, page_w, page_h);
             }
+            LayerObject::ImageObject(img) => {
+                let mut adjusted = img.clone();
+                let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
+                adjusted.boundary =
+                    format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                self.extract_image(result, &adjusted, scale);
+            }
+            LayerObject::TextObject(text) => {
+                let mut adjusted = text.clone();
+                let (bx, by, bw, bh) = parse_boundary(&adjusted.boundary);
+                adjusted.boundary =
+                    format!("{} {} {} {}", bx * sx + cx, by * sy + cy, bw * sx, bh * sy);
+                adjusted.size *= sy;
+                self.extract_text(result, &adjusted, scale);
+            }
+            LayerObject::PageBlock(block) => {
+                for child in &block.objects {
+                    self.extract_composite_page_block_object(result, child, scale, cx, cy, sx, sy);
+                }
+            }
+            LayerObject::CompositeObject(_) => {}
         }
     }
 
@@ -396,18 +422,10 @@ impl Parser {
         stamps: &[crate::stamp::ResolvedStamp],
         scale: f64,
     ) {
-        crate::debug_log(&format!(
-            "[CanvasStamp] emitting {} stamp image(s)",
-            stamps.len()
-        ));
         for stamp in stamps {
             let data_url = match stamp.canvas_data_url() {
                 Some(data_url) => data_url,
                 None => {
-                    crate::debug_warn(&format!(
-                        "[CanvasStamp] annot_id={}, page_ref={} has no drawable image",
-                        stamp.id, stamp.page_ref
-                    ));
                     continue;
                 }
             };
@@ -898,9 +916,8 @@ impl Parser {
 
                 // 优先使用已加载的字体文件数据
                 if let Some(font_data) = self.font_files.get(id) {
-                    if !font_data.is_empty() {
-                        info.has_file = true;
-                        let mime_type = detect_font_mime(font_data);
+                    info.has_file = !font_data.is_empty();
+                    if let Some(mime_type) = detect_font_mime(font_data) {
                         info.data_url = Some(format!(
                             "data:{};base64,{}",
                             mime_type,
@@ -909,9 +926,8 @@ impl Parser {
                     }
                 } else if !font.font_file.is_empty() {
                     if let Ok(font_data) = self.read_file(&font.font_file) {
-                        if !font_data.is_empty() {
-                            info.has_file = true;
-                            let mime_type = detect_font_mime(&font_data);
+                        info.has_file = !font_data.is_empty();
+                        if let Some(mime_type) = detect_font_mime(&font_data) {
                             info.data_url = Some(format!(
                                 "data:{};base64,{}",
                                 mime_type,
@@ -928,18 +944,63 @@ impl Parser {
 }
 
 /// 检测字体MIME类型
-pub fn detect_font_mime(data: &[u8]) -> &'static str {
-    if data.len() > 4 {
-        match (data[0], data[1], data[2], data[3]) {
-            (0x00, 0x01, _, _) => "font/ttf",
-            (0x4F, 0x54, _, _) => "font/otf",
-            (0x77, 0x4F, 0x46, 0x46) => "font/woff",
-            (0x77, 0x4F, 0x46, 0x32) => "font/woff2",
-            _ => "font/ttf",
+pub fn detect_font_mime(data: &[u8]) -> Option<&'static str> {
+    let mime = match data.get(0..4)? {
+        [0x00, 0x01, 0x00, 0x00] | b"true" | b"typ1" => {
+            if !has_browser_safe_sfnt_table_directory(data) {
+                return None;
+            }
+            "font/ttf"
         }
-    } else {
-        "font/ttf"
+        b"OTTO" => {
+            if !has_browser_safe_sfnt_table_directory(data) {
+                return None;
+            }
+            "font/otf"
+        }
+        b"wOFF" => "font/woff",
+        b"wOF2" => "font/woff2",
+        _ => return None,
+    };
+
+    ttf_parser::Face::parse(data, 0).ok()?;
+    Some(mime)
+}
+
+fn has_browser_safe_sfnt_table_directory(data: &[u8]) -> bool {
+    if data.len() < 12 {
+        return false;
     }
+
+    let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let table_dir_len = match num_tables.checked_mul(16).and_then(|len| len.checked_add(12)) {
+        Some(len) => len,
+        None => return false,
+    };
+    if data.len() < table_dir_len {
+        return false;
+    }
+
+    let mut previous_tag: Option<[u8; 4]> = None;
+    let mut has_os2 = false;
+    for i in 0..num_tables {
+        let offset = 12 + i * 16;
+        let tag = [
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ];
+        if previous_tag.is_some_and(|previous| previous >= tag) {
+            return false;
+        }
+        if &tag == b"OS/2" {
+            has_os2 = true;
+        }
+        previous_tag = Some(tag);
+    }
+
+    has_os2
 }
 
 /// 路径扫描器

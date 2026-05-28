@@ -8,6 +8,7 @@ if ! command -v wasm-pack &> /dev/null; then
 fi
 
 # 构建 WASM
-wasm-pack build --target web --out-dir pkg
+wasm-pack build --target web --out-dir target/wasm-pack-pkg
+node scripts/sync-wasm-artifact.mjs
 
-echo "Build complete! Output in pkg/"
+echo "Build complete! Updated pkg/ofd_rust_bg.wasm without overwriting pkg/ofd_rust.js"

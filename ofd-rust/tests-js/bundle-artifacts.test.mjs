@@ -10,6 +10,12 @@ const repoRoot = path.resolve(__dirname, "..");
 const bundleEsmPath = path.join(repoRoot, "dist", "ofd-viewer.bundle.esm.js");
 const bundleUmdPath = path.join(repoRoot, "dist", "ofd-viewer.bundle.umd.js");
 const bundleWasmPath = path.join(repoRoot, "dist", "ofd-viewer.wasm");
+const buildScriptPaths = [
+  "build.bat",
+  "build-component.bat",
+  "build.sh",
+  "build-component.sh",
+];
 
 function readJson(relativePath) {
   return JSON.parse(
@@ -24,13 +30,7 @@ function stripComments(source) {
 }
 
 function runCheck(name, fn) {
-  try {
-    fn();
-    console.log(`PASS ${name}`);
-  } catch (error) {
-    console.error(`FAIL ${name}`);
-    throw error;
-  }
+  fn();
 }
 
 runCheck("bundled viewer build emits JS and wasm artifacts in dist", () => {
@@ -78,5 +78,28 @@ runCheck(
       /function initWasm\(moduleOrPath = DEFAULT_WASM_URL\)/,
       "bundle should export an initWasm wrapper that defaults to the dist wasm",
     );
+    assert.match(
+      executableText,
+      /function createOFDViewer\(options = \{\}\)/,
+      "bundle should export createOFDViewer for one-call viewer creation",
+    );
   },
 );
+
+runCheck("build scripts do not overwrite custom pkg glue exports", () => {
+  for (const relativePath of buildScriptPaths) {
+    const source = fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(
+      source,
+      /wasm-pack\s+build[^\r\n]*--out-dir\s+pkg\b/,
+      `${relativePath} must not run wasm-pack directly into pkg because that deletes initOFDViewer`,
+    );
+  }
+
+  const pkg = readJson("package.json");
+  assert.doesNotMatch(
+    pkg.scripts["build:wasm"],
+    /wasm-pack\s+build[^\r\n]*--out-dir\s+pkg\b/,
+    "npm build:wasm must not run wasm-pack directly into pkg because that deletes initOFDViewer",
+  );
+});

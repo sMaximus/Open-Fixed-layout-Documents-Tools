@@ -181,14 +181,12 @@ class OFDViewer {
         const name = `OFD_Font_${font.id}`;
         if (this._loadedFonts.has(name)) continue;
         try {
-          css += `@font-face { font-family: '${name}'; src: url(${font.dataUrl}); }\n`;
           const face = new FontFace(name, `url(${font.dataUrl})`);
           await face.load();
           document.fonts.add(face);
           this._loadedFonts.set(name, face);
-        } catch (e) {
-          console.warn(`字体加载失败: ${name}`, e);
-        }
+          css += `@font-face { font-family: '${name}'; src: url(${font.dataUrl}); }\n`;
+        } catch {}
       }
 
       if (css) {
@@ -196,9 +194,7 @@ class OFDViewer {
         document.head.appendChild(styleEl);
       }
       await document.fonts.ready;
-    } catch (e) {
-      console.warn("加载字体出错:", e);
-    }
+    } catch {}
   }
 
   async _renderAllPages() {
@@ -352,7 +348,7 @@ class OFDViewer {
       this._allPagesData[index] = this._parser.render_page_svg(index);
       await this._renderPage(index);
     } catch (e) {
-      console.error(`加载页面 ${index + 1} 失败:`, e);
+      this.onError(e);
     }
   }
 }

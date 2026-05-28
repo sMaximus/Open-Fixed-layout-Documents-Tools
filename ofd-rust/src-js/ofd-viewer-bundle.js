@@ -26,4 +26,11 @@ export async function initWasm(moduleOrPath = DEFAULT_WASM_URL) {
   return initWasmImpl(moduleOrPath);
 }
 
+export async function createOFDViewer(options = {}) {
+  const { wasmUrl, ...viewerOptions } = options;
+  const viewer = new OFDViewer(viewerOptions);
+  await viewer.init(wasmUrl);
+  return viewer;
+}
+
 export { DEFAULT_WASM_URL as defaultWasmUrl, initSync, OFDParser };

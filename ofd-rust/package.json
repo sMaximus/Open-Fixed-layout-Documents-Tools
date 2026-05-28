@@ -21,7 +21,7 @@
     "src-js/"
   ],
   "scripts": {
-    "build:wasm": "cd . && wasm-pack build --target web --out-dir pkg",
+    "build:wasm": "wasm-pack build --target web --out-dir target/wasm-pack-pkg && node scripts/sync-wasm-artifact.mjs",
     "build:js": "rollup -c rollup.config.mjs",
     "build": "npm run build:wasm && npm run build:js",
     "test:bundle": "node ./tests-js/bundle-artifacts.test.mjs",

@@ -90,7 +90,6 @@ struct StampAnnotInfo {
 struct SignatureSource {
     path: String,
     sig_dir: String,
-    origin: String,
 }
 
 impl Parser {
@@ -145,21 +144,6 @@ impl Parser {
                 has_clip: geometry.has_clip,
             };
 
-            crate::debug_log(&format!(
-                "[Stamp] page_ref={}, annot_id={}, seal_found={}, has_clip={}, boundary='{}', clip='{}', visible='{}', source='{}'",
-                resolved_stamp.page_ref,
-                resolved_stamp.id,
-                resolved_stamp.image_data_url.is_some(),
-                resolved_stamp.has_clip,
-                resolved_stamp.boundary,
-                resolved_stamp.clip,
-                format_rect(resolved_stamp.visible_rect),
-                resolved_stamp
-                    .seal_source
-                    .clone()
-                    .unwrap_or_else(|| "<none>".to_string())
-            ));
-
             resolved.push(resolved_stamp);
         }
 
@@ -169,30 +153,16 @@ impl Parser {
     fn collect_stamp_annots(&mut self) -> Vec<StampAnnotInfo> {
         let mut all_annots = Vec::new();
         let signature_sources = self.collect_signature_sources();
-        crate::debug_log(&format!(
-            "[StampScan] discovered {} Signature.xml source(s)",
-            signature_sources.len()
-        ));
 
         for source in signature_sources {
             let sig_data = match self.read_file(&source.path) {
                 Ok(data) => data,
-                Err(err) => {
-                    crate::debug_warn(&format!(
-                        "[StampScan] failed to read Signature.xml origin={} path='{}': {}",
-                        source.origin, source.path, err
-                    ));
+                Err(_) => {
                     continue;
                 }
             };
 
             let annots = parse_signature_stamp_annots(&String::from_utf8_lossy(&sig_data));
-            crate::debug_log(&format!(
-                "[StampScan] origin={}, path='{}', annots={}",
-                source.origin,
-                source.path,
-                annots.len()
-            ));
 
             for annot in annots {
                 all_annots.push(StampAnnotInfo {
@@ -201,11 +171,6 @@ impl Parser {
                 });
             }
         }
-
-        crate::debug_log(&format!(
-            "[StampScan] collected {} StampAnnot record(s)",
-            all_annots.len()
-        ));
 
         all_annots
     }
@@ -271,21 +236,14 @@ impl Parser {
         let files_clone: Vec<String> = self.files.clone();
         let mut sources = Vec::new();
         let mut seen = HashSet::new();
-        let mut signatures_index_files = 0;
-
         for file in &files_clone {
             if !file.to_lowercase().ends_with("signatures.xml") {
                 continue;
             }
-            signatures_index_files += 1;
 
             let data = match self.read_file(file) {
                 Ok(d) => d,
-                Err(err) => {
-                    crate::debug_warn(&format!(
-                        "[StampScan] failed to read Signatures.xml '{}': {}",
-                        file, err
-                    ));
+                Err(_) => {
                     continue;
                 }
             };
@@ -293,20 +251,10 @@ impl Parser {
             let xml_str = Self::remove_namespace_prefix(&String::from_utf8_lossy(&data));
             let sigs: Signatures = match quick_xml::de::from_str(&xml_str) {
                 Ok(sigs) => sigs,
-                Err(err) => {
-                    crate::debug_warn(&format!(
-                        "[StampScan] failed to parse Signatures.xml '{}': {}",
-                        file, err
-                    ));
+                Err(_) => {
                     continue;
                 }
             };
-
-            crate::debug_log(&format!(
-                "[StampScan] Signatures.xml '{}' listed {} signature entry(s)",
-                file,
-                sigs.signature.len()
-            ));
 
             let base_path = std::path::Path::new(file)
                 .parent()
@@ -323,10 +271,6 @@ impl Parser {
                     match self.read_file(candidate) {
                         Ok(_) => {
                             resolved_path = Some(candidate.to_string());
-                            crate::debug_log(&format!(
-                                "[StampScan] resolved Signature.xml from index: base_loc='{}' -> '{}'",
-                                sig.base_loc, candidate
-                            ));
                             break;
                         }
                         Err(_) => {}
@@ -336,41 +280,20 @@ impl Parser {
                 let sig_path = match resolved_path {
                     Some(path) => path,
                     None => {
-                        crate::debug_warn(&format!(
-                            "[StampScan] could not resolve Signature.xml from BaseLoc='{}' (index file '{}')",
-                            sig.base_loc, file
-                        ));
                         continue;
                     }
                 };
 
-                push_signature_source(&mut sources, &mut seen, sig_path, format!("index:{}", file));
+                push_signature_source(&mut sources, &mut seen, sig_path);
             }
         }
 
-        crate::debug_log(&format!(
-            "[StampScan] scanned {} Signatures.xml index file(s)",
-            signatures_index_files
-        ));
-
-        let mut direct_scan_hits = 0;
         for file in &files_clone {
             let lower = file.to_lowercase();
             if lower.ends_with("signature.xml") && !lower.ends_with("signatures.xml") {
-                direct_scan_hits += 1;
-                push_signature_source(
-                    &mut sources,
-                    &mut seen,
-                    file.clone(),
-                    "direct-scan".to_string(),
-                );
+                push_signature_source(&mut sources, &mut seen, file.clone());
             }
         }
-
-        crate::debug_log(&format!(
-            "[StampScan] direct Signature.xml scan found {} file(s)",
-            direct_scan_hits
-        ));
 
         sources
     }
@@ -535,7 +458,6 @@ fn push_signature_source(
     sources: &mut Vec<SignatureSource>,
     seen: &mut HashSet<String>,
     sig_path: String,
-    origin: String,
 ) {
     let key = sig_path.to_lowercase();
     if !seen.insert(key) {
@@ -551,6 +473,5 @@ fn push_signature_source(
     sources.push(SignatureSource {
         path: sig_path,
         sig_dir,
-        origin,
     });
 }

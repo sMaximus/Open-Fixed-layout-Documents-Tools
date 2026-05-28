@@ -4,6 +4,14 @@ use std::io::{Cursor, Write};
 use zip::write::FileOptions;
 use zip::ZipWriter;
 
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+    0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+    0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+    0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+    0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
 fn build_test_ofd(signature_xml: &str) -> Vec<u8> {
     build_test_ofd_with_index(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -19,6 +27,28 @@ fn build_test_ofd_with_files(
     signatures_xml: &str,
     signature_xml_files: &[(&str, &str)],
     extra_files: &[(&str, &[u8])],
+) -> Vec<u8> {
+    const PAGE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Page>
+  <Area>
+    <PhysicalBox>0 0 210 297</PhysicalBox>
+  </Area>
+</Page>
+"#;
+
+    build_test_ofd_with_files_and_page(
+        signatures_xml,
+        signature_xml_files,
+        extra_files,
+        PAGE_XML,
+    )
+}
+
+fn build_test_ofd_with_files_and_page(
+    signatures_xml: &str,
+    signature_xml_files: &[(&str, &str)],
+    extra_files: &[(&str, &[u8])],
+    page_xml: &str,
 ) -> Vec<u8> {
     const OFD_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <OFD>
@@ -41,14 +71,6 @@ fn build_test_ofd_with_files(
 </Document>
 "#;
 
-    const PAGE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<Page>
-  <Area>
-    <PhysicalBox>0 0 210 297</PhysicalBox>
-  </Area>
-</Page>
-"#;
-
     let cursor = Cursor::new(Vec::<u8>::new());
     let mut zip = ZipWriter::new(cursor);
     let options = FileOptions::default();
@@ -56,7 +78,7 @@ fn build_test_ofd_with_files(
     for (path, contents) in [
         ("OFD.xml", OFD_XML.as_bytes()),
         ("Doc_0/Document.xml", DOCUMENT_XML.as_bytes()),
-        ("Doc_0/Pages/Page_0/Content.xml", PAGE_XML.as_bytes()),
+        ("Doc_0/Pages/Page_0/Content.xml", page_xml.as_bytes()),
         ("Doc_0/Signs/Signatures.xml", signatures_xml.as_bytes()),
     ] {
         zip.start_file(path, options).unwrap();
@@ -77,20 +99,75 @@ fn build_test_ofd_with_files(
 }
 
 fn build_test_ofd_with_index(signatures_xml: &str, signature_xml: &str) -> Vec<u8> {
-    const TINY_PNG: &[u8] = &[
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
-        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
-        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8,
-        0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00,
-        0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-    ];
-
     let extra_files: Vec<(&str, &[u8])> = vec![("Doc_0/Signs/Sign_0/Seal.png", TINY_PNG)];
     build_test_ofd_with_files(
         signatures_xml,
         &[("Doc_0/Signs/Sign_0/Signature.xml", signature_xml)],
         &extra_files,
     )
+}
+
+#[test]
+fn render_page_svg_draws_signature_stamp_after_page_text_for_blending() {
+    let signature_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signature>
+  <SignedInfo>
+    <StampAnnot ID="s001" PageRef="1" Boundary="10 20 40 40"/>
+  </SignedInfo>
+</Signature>
+"#;
+    let signatures_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signatures>
+  <Signature ID="sig1" BaseLoc="Sign_0/Signature.xml"/>
+</Signatures>
+"#;
+    let page_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Page>
+  <Area>
+    <PhysicalBox>0 0 210 297</PhysicalBox>
+  </Area>
+  <Content>
+    <Layer ID="L1">
+      <TextObject ID="t001" Boundary="10 20 40 10" Font="F1" Size="5">
+        <FillColor Value="0 0 0"/>
+        <TextCode X="0" Y="5">000001</TextCode>
+      </TextObject>
+    </Layer>
+  </Content>
+</Page>
+"#;
+
+    let mut parser = Parser::new(build_test_ofd_with_files_and_page(
+        signatures_xml,
+        &[("Doc_0/Signs/Sign_0/Signature.xml", signature_xml)],
+        &[("Doc_0/Signs/Sign_0/Seal.png", TINY_PNG)],
+        page_xml,
+    ))
+    .unwrap();
+    parser.parse().unwrap();
+
+    let result = parser.render_page_svg(0);
+    let svg = result.svg.expect("expected svg output");
+
+    let text_index = svg
+        .find("<text ")
+        .unwrap_or_else(|| panic!("expected page text in svg, got: {svg}"));
+    let stamp_index = svg
+        .find("data:image/png;base64")
+        .unwrap_or_else(|| panic!("expected signature stamp in svg, got: {svg}"));
+
+    assert!(
+        stamp_index > text_index,
+        "expected signature stamp to render after page text so overlap can blend, got: {svg}"
+    );
+    assert!(
+        svg.contains("mix-blend-mode: multiply"),
+        "expected signature stamp to use multiply blend mode, got: {svg}"
+    );
+    assert!(
+        svg.contains("pointer-events: none"),
+        "expected signature stamp to ignore pointer events, got: {svg}"
+    );
 }
 
 #[test]
@@ -237,18 +314,14 @@ fn render_page_svg_falls_back_to_scanning_signature_xml_when_index_has_no_entrie
     let result = parser.render_page_svg(0);
     let svg = result.svg.expect("expected svg output");
 
+    assert!(
+        svg.contains("data:image/png;base64"),
+        "expected fallback signature scan to render stamp image, got: {svg}"
+    );
 }
 
 #[test]
 fn render_page_svg_does_not_reuse_another_signature_seal_for_placeholder_locator() {
-    const TINY_PNG: &[u8] = &[
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
-        0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
-        0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44,
-        0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00,
-        0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
-        0x44, 0xAE, 0x42, 0x60, 0x82,
-    ];
     let signatures_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Signatures>
   <Signature ID="0" Type="Seal" BaseLoc="Sign_0/Signature.xml"/>
