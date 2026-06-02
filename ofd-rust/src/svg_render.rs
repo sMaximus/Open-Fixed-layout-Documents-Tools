@@ -1978,6 +1978,12 @@ impl Parser {
             };
 
             for annot in &page_annot.annots {
+                if annot.annot_type.eq_ignore_ascii_case("Link")
+                    || annot.subtype.eq_ignore_ascii_case("Link")
+                {
+                    continue;
+                }
+
                 let (ax, ay, _, _) = parse_boundary(&annot.appearance.boundary);
 
                 // 用 <g> 包裹注释，偏移到注释位置
@@ -2031,7 +2037,7 @@ impl Parser {
     fn load_stamps_svg(
         &mut self,
         svg_parts: &mut Vec<String>,
-        text_overlay: &mut Vec<TextOverlayItem>,
+        _text_overlay: &mut Vec<TextOverlayItem>,
         stamps: &[crate::stamp::ResolvedStamp],
         scale: f64,
         page_index: usize,
@@ -2074,13 +2080,25 @@ impl Parser {
                     ));
                 }
             } else {
-                text_overlay.push(TextOverlayItem {
-                    text: "[电子签章]".to_string(),
-                    x: stamp.visible_rect.x * scale,
-                    y: stamp.visible_rect.y * scale,
-                    width: stamp.visible_rect.width * scale,
-                    height: stamp.visible_rect.height * scale,
-                });
+                let x = stamp.visible_rect.x * scale;
+                let y = stamp.visible_rect.y * scale;
+                let w = stamp.visible_rect.width * scale;
+                let h = stamp.visible_rect.height * scale;
+                svg_parts.push(format!(
+                    r##"<g class="ofd-signature-stamp-placeholder" style="pointer-events: none"><rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="none" stroke="#0000ff" stroke-width="1" vector-effect="non-scaling-stroke"/><line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="#0000ff" stroke-width="1" vector-effect="non-scaling-stroke"/><line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="#0000ff" stroke-width="1" vector-effect="non-scaling-stroke"/></g>"##,
+                    x,
+                    y,
+                    w,
+                    h,
+                    x,
+                    y,
+                    x + w,
+                    y + h,
+                    x + w,
+                    y,
+                    x,
+                    y + h
+                ));
             }
         }
     }

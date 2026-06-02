@@ -367,3 +367,60 @@ fn render_page_svg_does_not_reuse_another_signature_seal_for_placeholder_locator
     assert_eq!(entries[1].annot_id, "7");
     assert!(!entries[1].seal_found, "locator without local seal data must not reuse Sign_0 seal");
 }
+
+#[test]
+fn render_page_svg_draws_blue_cross_placeholder_when_stamp_image_is_missing() {
+    let signatures_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signatures>
+  <Signature ID="sig1" Type="Seal" BaseLoc="Sign_0/Signature.xml"/>
+</Signatures>
+"#;
+    let signature_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signature>
+  <SignedInfo>
+    <StampAnnot ID="s001" PageRef="1" Boundary="68.7917 27.7813 38 38"/>
+    <Seal><BaseLoc>Seal.esl</BaseLoc></Seal>
+  </SignedInfo>
+  <SignedValue>SignedValue.dat</SignedValue>
+</Signature>
+"#;
+
+    let mut parser = Parser::new(build_test_ofd_with_files(
+        signatures_xml,
+        &[("Doc_0/Signs/Sign_0/Signature.xml", signature_xml)],
+        &[],
+    ))
+    .unwrap();
+    parser.parse().unwrap();
+
+    let result = parser.render_page_svg(0);
+    let entries = result
+        .stamp_debug
+        .as_ref()
+        .expect("expected stamp debug entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].annot_id, "s001");
+    assert!(
+        !entries[0].seal_found,
+        "missing stamp image should be recorded in debug info"
+    );
+
+    let svg = result.svg.expect("expected svg output");
+    assert!(
+        svg.contains(r#"class="ofd-signature-stamp-placeholder""#),
+        "expected missing stamp image to render a placeholder, got: {svg}"
+    );
+    assert!(
+        svg.contains(r##"stroke="#0000ff""##),
+        "expected placeholder to use the blue fallback stroke, got: {svg}"
+    );
+    assert!(
+        svg.contains("<rect "),
+        "expected placeholder to include a boundary rectangle, got: {svg}"
+    );
+    assert_eq!(
+        svg.matches("<line ").count(),
+        2,
+        "expected placeholder to include two diagonal lines, got: {svg}"
+    );
+}
