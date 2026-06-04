@@ -224,10 +224,17 @@ impl Parser {
     }
 
     fn package_contains_exact_path(&self, path: &str) -> bool {
-        let normalized = path.trim_start_matches('/').to_lowercase();
+        self.resolve_package_exact_path(path).is_some()
+    }
+
+    fn resolve_package_exact_path(&self, path: &str) -> Option<String> {
+        let normalized = normalize_package_path(path.trim_start_matches('/')).to_lowercase();
         self.files
             .iter()
-            .any(|file| file.trim_start_matches('/').to_lowercase() == normalized)
+            .find(|file| {
+                normalize_package_path(file.trim_start_matches('/')).to_lowercase() == normalized
+            })
+            .cloned()
     }
 }
 
@@ -263,21 +270,20 @@ impl Parser {
                 .to_string();
 
             for sig in &sigs.signature {
-                let sig_loc = sig.base_loc.trim_start_matches('/');
-                let candidates = [format!("{}/{}", base_path, sig_loc), sig_loc.to_string()];
-
-                let mut resolved_path = None;
-                for candidate in &candidates {
-                    match self.read_file(candidate) {
-                        Ok(_) => {
-                            resolved_path = Some(candidate.to_string());
-                            break;
-                        }
-                        Err(_) => {}
-                    }
+                let sig_loc = normalize_package_path(sig.base_loc.trim_start_matches('/'));
+                if sig_loc.is_empty() {
+                    continue;
                 }
 
-                let sig_path = match resolved_path {
+                let mut candidates = vec![sig_loc.clone()];
+                if !base_path.is_empty() {
+                    candidates.push(format!("{}/{}", base_path, sig_loc));
+                }
+
+                let sig_path = match candidates
+                    .iter()
+                    .find_map(|candidate| self.resolve_package_exact_path(candidate))
+                {
                     Some(path) => path,
                     None => {
                         continue;
@@ -474,4 +480,8 @@ fn push_signature_source(
         path: sig_path,
         sig_dir,
     });
+}
+
+fn normalize_package_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches('/').to_string()
 }

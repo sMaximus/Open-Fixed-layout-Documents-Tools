@@ -369,6 +369,57 @@ fn render_page_svg_does_not_reuse_another_signature_seal_for_placeholder_locator
 }
 
 #[test]
+fn render_page_svg_keeps_document_relative_signature_baseloc_sig_dir() {
+    let signatures_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signatures>
+  <Signature ID="0" Type="Seal" BaseLoc="Sign_0/Signature.xml"/>
+  <Signature ID="1" Type="Seal" BaseLoc="Doc_0/Signs/Sign_1/Signature.xml"/>
+</Signatures>
+"#;
+    let sign_0_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signature>
+  <SignedInfo>
+    <StampAnnot ID="s0" PageRef="1" Boundary="10 20 40 40"/>
+  </SignedInfo>
+</Signature>
+"#;
+    let sign_1_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signature>
+  <SignedInfo>
+    <StampAnnot ID="s1" PageRef="1" Boundary="50 60 30 30"/>
+  </SignedInfo>
+</Signature>
+"#;
+
+    let mut parser = Parser::new(build_test_ofd_with_files(
+        signatures_xml,
+        &[
+            ("Doc_0/Signs/Sign_0/Signature.xml", sign_0_xml),
+            ("Doc_0/Signs/Sign_1/Signature.xml", sign_1_xml),
+        ],
+        &[
+            ("Doc_0/Signs/Sign_0/Seal.png", TINY_PNG),
+            ("Doc_0/Signs/Sign_1/Seal.png", TINY_PNG),
+        ],
+    ))
+    .unwrap();
+    parser.parse().unwrap();
+
+    let result = parser.render_page_svg(0);
+    let entries = result.stamp_debug.expect("expected stamp debug entries");
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].annot_id, "s0");
+    assert_eq!(entries[0].sig_dir, "Doc_0/Signs/Sign_0");
+    assert_eq!(entries[1].annot_id, "s1");
+    assert_eq!(entries[1].sig_dir, "Doc_0/Signs/Sign_1");
+    assert_eq!(
+        entries[1].seal_source.as_deref(),
+        Some("Doc_0/Signs/Sign_1/Seal.png")
+    );
+}
+
+#[test]
 fn render_page_svg_draws_blue_cross_placeholder_when_stamp_image_is_missing() {
     let signatures_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Signatures>
