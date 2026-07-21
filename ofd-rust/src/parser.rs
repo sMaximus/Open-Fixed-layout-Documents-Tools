@@ -2,7 +2,7 @@
 
 use regex::Regex;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use zip::ZipArchive;
 
@@ -32,6 +32,8 @@ pub struct Parser {
     pub fonts: HashMap<String, Font>,
     pub images: HashMap<String, Vec<u8>>,
     pub font_files: HashMap<String, Vec<u8>>,
+    pub(crate) standalone_cff_fonts: HashSet<String>,
+    pub(crate) standalone_cff_transforms: HashMap<String, Vec<crate::font::CffGlyphTransform>>,
     pub composite_units: HashMap<String, CompositeGraphicUnit>,
     pub draw_params: HashMap<String, DrawParam>,
 }
@@ -74,6 +76,8 @@ impl Parser {
             fonts: HashMap::new(),
             images: HashMap::new(),
             font_files: HashMap::new(),
+            standalone_cff_fonts: HashSet::new(),
+            standalone_cff_transforms: HashMap::new(),
             composite_units: HashMap::new(),
             draw_params: HashMap::new(),
         })
@@ -464,6 +468,25 @@ impl Parser {
                         // 预加载字体文件数据，记录该字体有嵌入文件
                         match self.read_file(&font_clone.font_file) {
                             Ok(font_data) if !font_data.is_empty() => {
+                                let font_name = if !font.font_name.is_empty() {
+                                    &font.font_name
+                                } else if !font.family_name.is_empty() {
+                                    &font.family_name
+                                } else {
+                                    &font.id
+                                };
+                                let font_data =
+                                    match crate::font::convert_cff_to_otf(&font_data, font_name) {
+                                        Some(converted) => {
+                                            self.standalone_cff_transforms.insert(
+                                                font.id.clone(),
+                                                crate::font::cff_glyph_transforms(&font_data),
+                                            );
+                                            self.standalone_cff_fonts.insert(font.id.clone());
+                                            converted
+                                        }
+                                        None => font_data,
+                                    };
                                 self.font_files.insert(font.id.clone(), font_data);
                             }
                             Ok(_) | Err(_) => {}

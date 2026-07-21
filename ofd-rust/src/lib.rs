@@ -2,6 +2,7 @@
 //!
 //! 用于解析和渲染 OFD (Open Fixed-layout Document) 文档
 
+mod font;
 mod page;
 mod parser;
 mod render;
@@ -12,6 +13,7 @@ mod types;
 use serde_json;
 use wasm_bindgen::prelude::*;
 
+pub use font::*;
 pub use page::*;
 pub use parser::*;
 pub use render::*;

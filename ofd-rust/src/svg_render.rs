@@ -11,27 +11,36 @@ use crate::render::*;
 /// 字形轮廓构建器：将 ttf-parser 的回调转为 SVG path d 属性
 struct GlyphPathBuilder {
     path: String,
+    transform: crate::font::CffGlyphTransform,
 }
 
 impl GlyphPathBuilder {
-    fn new() -> Self {
+    fn new(transform: crate::font::CffGlyphTransform) -> Self {
         GlyphPathBuilder {
             path: String::new(),
+            transform,
         }
     }
 }
 
 impl ttf_parser::OutlineBuilder for GlyphPathBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.transform.apply(x, y);
         let _ = write!(self.path, "M{:.4},{:.4} ", x, -y);
     }
     fn line_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.transform.apply(x, y);
         let _ = write!(self.path, "L{:.4},{:.4} ", x, -y);
     }
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let (x1, y1) = self.transform.apply(x1, y1);
+        let (x, y) = self.transform.apply(x, y);
         let _ = write!(self.path, "Q{:.4},{:.4} {:.4},{:.4} ", x1, -y1, x, -y);
     }
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let (x1, y1) = self.transform.apply(x1, y1);
+        let (x2, y2) = self.transform.apply(x2, y2);
+        let (x, y) = self.transform.apply(x, y);
         let _ = write!(
             self.path,
             "C{:.4},{:.4} {:.4},{:.4} {:.4},{:.4} ",
@@ -45,10 +54,18 @@ impl ttf_parser::OutlineBuilder for GlyphPathBuilder {
 
 /// 从字体数据中提取字符的 SVG path
 /// 返回 (path_d, advance_width) — advance_width 是字体单位的前进宽度
-fn glyph_to_svg_path(font_data: &[u8], ch: char) -> Option<(String, f64)> {
+fn glyph_to_svg_path(
+    font_data: &[u8],
+    ch: char,
+    transforms: Option<&[crate::font::CffGlyphTransform]>,
+) -> Option<(String, f64)> {
     let face = ttf_parser::Face::parse(font_data, 0).ok()?;
     let glyph_id = face.glyph_index(ch)?;
-    let mut builder = GlyphPathBuilder::new();
+    let transform = transforms
+        .and_then(|items| items.get(usize::from(glyph_id.0)))
+        .copied()
+        .unwrap_or_default();
+    let mut builder = GlyphPathBuilder::new(transform);
     let _bbox = face.outline_glyph(glyph_id, &mut builder)?;
     if builder.path.is_empty() {
         return None;
@@ -60,11 +77,26 @@ fn glyph_to_svg_path(font_data: &[u8], ch: char) -> Option<(String, f64)> {
     Some((builder.path, advance))
 }
 
-/// 通过 GlyphID 直接提取字形的 SVG path（用于 CGTransform 映射）
-fn glyph_id_to_svg_path(font_data: &[u8], glyph_id: u16) -> Option<(String, f64)> {
+/// 通过 CGTransform 字形编码提取 SVG path（独立 CFF 中可能是 CID）
+fn glyph_id_to_svg_path(
+    font_data: &[u8],
+    glyph_code: u16,
+    map_cff_cid: bool,
+    transforms: Option<&[crate::font::CffGlyphTransform]>,
+) -> Option<(String, f64)> {
     let face = ttf_parser::Face::parse(font_data, 0).ok()?;
-    let gid = ttf_parser::GlyphId(glyph_id);
-    let mut builder = GlyphPathBuilder::new();
+    let gid = if map_cff_cid {
+        char::from_u32(u32::from(glyph_code))
+            .and_then(|ch| face.glyph_index(ch))
+            .unwrap_or(ttf_parser::GlyphId(glyph_code))
+    } else {
+        ttf_parser::GlyphId(glyph_code)
+    };
+    let transform = transforms
+        .and_then(|items| items.get(usize::from(gid.0)))
+        .copied()
+        .unwrap_or_default();
+    let mut builder = GlyphPathBuilder::new(transform);
     let _bbox = face.outline_glyph(gid, &mut builder)?;
     if builder.path.is_empty() {
         return None;
@@ -248,6 +280,9 @@ impl Parser {
         // 嵌入字体 @font-face 到 SVG 内部
         let mut font_css = String::new();
         for (id, _font) in &self.fonts {
+            if self.standalone_cff_fonts.contains(id) {
+                continue;
+            }
             if let Some(font_data) = self.font_files.get(id) {
                 if let Some(mime_type) = detect_font_mime(font_data) {
                     let b64 = BASE64.encode(font_data);
@@ -1491,18 +1526,27 @@ impl Parser {
                         .unwrap_or(false);
 
                     let glyph_path = if let Some(gid) = cg_glyph_id {
-                        // CGTransform 指定了 GlyphID，直接按 ID 提取（优先级最高）
-                        self.font_files
+                        // CGTransform 优先；独立 CFF 先将 CID 映射为子集 GlyphID
+                        let map_cff_cid = self.standalone_cff_fonts.contains(font_id);
+                        let cff_transforms = self
+                            .standalone_cff_transforms
                             .get(font_id)
-                            .and_then(|data| glyph_id_to_svg_path(data, gid))
+                            .map(Vec::as_slice);
+                        self.font_files.get(font_id).and_then(|data| {
+                            glyph_id_to_svg_path(data, gid, map_cff_cid, cff_transforms)
+                        })
                     } else if use_cg_transform {
                         None
                     } else if has_system_font {
                         None // 有系统字体且无 CGTransform，统一用 <text> 渲染
                     } else {
+                        let cff_transforms = self
+                            .standalone_cff_transforms
+                            .get(font_id)
+                            .map(Vec::as_slice);
                         self.font_files
                             .get(font_id)
-                            .and_then(|data| glyph_to_svg_path(data, ch))
+                            .and_then(|data| glyph_to_svg_path(data, ch, cff_transforms))
                     };
 
                     if let Some((path_d, _advance)) = glyph_path {
@@ -2079,7 +2123,7 @@ impl Parser {
                         image
                     ));
                 }
-            } else {
+            } else if stamp.should_render_placeholder {
                 let x = stamp.visible_rect.x * scale;
                 let y = stamp.visible_rect.y * scale;
                 let w = stamp.visible_rect.width * scale;

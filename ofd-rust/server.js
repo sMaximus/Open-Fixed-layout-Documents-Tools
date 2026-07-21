@@ -38,3 +38,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT);
+
+console.log(`Open the browser and access http://localhost:${PORT}`);

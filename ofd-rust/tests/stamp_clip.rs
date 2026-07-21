@@ -475,3 +475,37 @@ fn render_page_svg_draws_blue_cross_placeholder_when_stamp_image_is_missing() {
         "expected placeholder to include two diagonal lines, got: {svg}"
     );
 }
+
+#[test]
+fn render_page_svg_does_not_draw_placeholder_when_stamp_file_exists_without_extractable_image() {
+    let signatures_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signatures>
+  <Signature ID="sig1" Type="Seal" BaseLoc="Sign_0/Signature.xml"/>
+</Signatures>
+"#;
+    let signature_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Signature>
+  <SignedInfo>
+    <StampAnnot ID="s001" PageRef="1" Boundary="68.7917 27.7813 38 38"/>
+    <Seal><BaseLoc>Seal.esl</BaseLoc></Seal>
+  </SignedInfo>
+  <SignedValue>SignedValue.dat</SignedValue>
+</Signature>
+"#;
+
+    let mut parser = Parser::new(build_test_ofd_with_files(
+        signatures_xml,
+        &[("Doc_0/Signs/Sign_0/Signature.xml", signature_xml)],
+        &[("Doc_0/Signs/Sign_0/Seal.esl", b"not an image")],
+    ))
+    .unwrap();
+    parser.parse().unwrap();
+
+    let result = parser.render_page_svg(0);
+    let svg = result.svg.expect("expected svg output");
+
+    assert!(
+        !svg.contains(r#"class="ofd-signature-stamp-placeholder""#),
+        "existing stamp file should not render a missing-file placeholder, got: {svg}"
+    );
+}

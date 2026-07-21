@@ -30,6 +30,7 @@ pub(crate) struct ResolvedStamp {
     pub image_data_url: Option<String>,
     pub seal_source: Option<String>,
     pub mime_type: Option<String>,
+    pub should_render_placeholder: bool,
     pub full_rect: StampRect,
     pub visible_rect: StampRect,
     pub source_rect: StampRect,
@@ -116,16 +117,20 @@ impl Parser {
                 None => continue,
             };
 
-            let seal_image = self.find_seal_image(&item.sig_dir);
-            let image_data_url = seal_image.as_ref().map(|seal_img| {
+            let seal_lookup = self.find_seal_image(&item.sig_dir);
+            let image_data_url = seal_lookup.image.as_ref().map(|seal_img| {
                 format!(
                     "data:{};base64,{}",
                     seal_img.mime_type,
                     BASE64.encode(&seal_img.bytes)
                 )
             });
-            let seal_source = seal_image.as_ref().map(|seal_img| seal_img.source.clone());
-            let mime_type = seal_image
+            let seal_source = seal_lookup
+                .image
+                .as_ref()
+                .map(|seal_img| seal_img.source.clone());
+            let mime_type = seal_lookup
+                .image
                 .as_ref()
                 .map(|seal_img| seal_img.mime_type.to_string());
 
@@ -138,6 +143,7 @@ impl Parser {
                 image_data_url,
                 seal_source,
                 mime_type,
+                should_render_placeholder: !seal_lookup.stamp_file_exists,
                 full_rect: geometry.full_rect,
                 visible_rect: geometry.visible_rect,
                 source_rect: geometry.source_rect,
@@ -175,7 +181,7 @@ impl Parser {
         all_annots
     }
 
-    fn find_seal_image(&mut self, sig_dir: &str) -> Option<SealImage> {
+    fn find_seal_image(&mut self, sig_dir: &str) -> SealLookup {
         let candidates = [
             format!("{}/Seal.esl", sig_dir),
             format!("{}/seal.esl", sig_dir),
@@ -184,17 +190,22 @@ impl Parser {
             format!("{}/SignedValue.dat", sig_dir),
         ];
 
+        let mut stamp_file_exists = false;
         for candidate in &candidates {
             if !self.package_contains_exact_path(candidate) {
                 continue;
             }
+            stamp_file_exists = true;
             if let Ok(data) = self.read_file(candidate) {
                 if let Some(img) = crate::svg_render::extract_image_from_binary(&data) {
-                    return Some(SealImage {
-                        mime_type: detect_stamp_mime_type(&img),
-                        bytes: img,
-                        source: candidate.to_string(),
-                    });
+                    return SealLookup {
+                        image: Some(SealImage {
+                            mime_type: detect_stamp_mime_type(&img),
+                            bytes: img,
+                            source: candidate.to_string(),
+                        }),
+                        stamp_file_exists,
+                    };
                 }
             }
         }
@@ -210,17 +221,24 @@ impl Parser {
                     || lower.ends_with(".gif")
                     || lower.ends_with(".svg"))
             {
+                stamp_file_exists = true;
                 if let Ok(data) = self.read_file(file) {
-                    return Some(SealImage {
-                        mime_type: detect_stamp_mime_type(&data),
-                        bytes: data,
-                        source: file.clone(),
-                    });
+                    return SealLookup {
+                        image: Some(SealImage {
+                            mime_type: detect_stamp_mime_type(&data),
+                            bytes: data,
+                            source: file.clone(),
+                        }),
+                        stamp_file_exists,
+                    };
                 }
             }
         }
 
-        None
+        SealLookup {
+            image: None,
+            stamp_file_exists,
+        }
     }
 
     fn package_contains_exact_path(&self, path: &str) -> bool {
@@ -318,6 +336,12 @@ struct SealImage {
     mime_type: &'static str,
     bytes: Vec<u8>,
     source: String,
+}
+
+#[derive(Debug, Clone)]
+struct SealLookup {
+    image: Option<SealImage>,
+    stamp_file_exists: bool,
 }
 
 fn compute_stamp_geometry(annot: &StampAnnot) -> Option<StampGeometry> {

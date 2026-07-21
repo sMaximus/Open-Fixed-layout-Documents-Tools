@@ -917,12 +917,14 @@ impl Parser {
                 // 优先使用已加载的字体文件数据
                 if let Some(font_data) = self.font_files.get(id) {
                     info.has_file = !font_data.is_empty();
-                    if let Some(mime_type) = detect_font_mime(font_data) {
-                        info.data_url = Some(format!(
-                            "data:{};base64,{}",
-                            mime_type,
-                            BASE64.encode(font_data)
-                        ));
+                    if !self.standalone_cff_fonts.contains(id) {
+                        if let Some(mime_type) = detect_font_mime(font_data) {
+                            info.data_url = Some(format!(
+                                "data:{};base64,{}",
+                                mime_type,
+                                BASE64.encode(font_data)
+                            ));
+                        }
                     }
                 } else if !font.font_file.is_empty() {
                     if let Ok(font_data) = self.read_file(&font.font_file) {
